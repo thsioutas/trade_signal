@@ -1,0 +1,10 @@
+[package]
+name = "sma_analyzer"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow              = { version = "1.0" }
+clap                = { version = "4.5", features = ["derive"] }
+csv                 = { version = "1.4" }
+serde               = { version = "1", features = ["derive"] }
