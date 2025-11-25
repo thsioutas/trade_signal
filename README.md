@@ -30,7 +30,7 @@ timestamp,price
 ...
 ```
 
-At least 51 rows are required to compute:
+At least 51 rows (hour samples) are required to compute:
 
 * previous SMA50
 * current SMA50

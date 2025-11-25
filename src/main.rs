@@ -1,7 +1,10 @@
 use anyhow::{Context, Result};
+use chrono::{DateTime, Timelike, Utc};
 use clap::Parser;
 use csv::ReaderBuilder;
 use serde::Deserialize;
+
+use std::collections::BTreeMap;
 use std::fs::File;
 use std::path::PathBuf;
 
@@ -18,6 +21,12 @@ struct PriceRow {
     price: f64,
 }
 
+#[derive(Debug, Clone)]
+struct Sample {
+    ts: DateTime<Utc>,
+    price: f64,
+}
+
 fn main() -> Result<()> {
     let args = Args::parse();
 
@@ -26,19 +35,40 @@ fn main() -> Result<()> {
 
     let mut rdr = ReaderBuilder::new().has_headers(true).from_reader(file);
 
-    let mut prices: Vec<f64> = Vec::new();
-    let mut last_timestamp: Option<String> = None;
+    let mut samples: Vec<Sample> = Vec::new();
 
     for result in rdr.deserialize::<PriceRow>() {
-        let row = result.with_context(|| "failed to deserialize CSV row")?;
-        last_timestamp = Some(row.timestamp);
-        prices.push(row.price);
+        let row: PriceRow = result.with_context(|| "failed to deserialize CSV row")?;
+        let ts = DateTime::parse_from_rfc3339(&row.timestamp)
+            .with_context(|| format!("failed to parse timestamp: {}", row.timestamp))?
+            .with_timezone(&Utc);
+        samples.push(Sample {
+            ts,
+            price: row.price,
+        });
     }
 
-    if prices.is_empty() {
+    if samples.is_empty() {
         println!("No data found in CSV.");
         return Ok(());
     }
+
+    // Resample to hourly closes
+    let hourly = resample_to_hourly(&samples);
+
+    println!(
+        "Loaded {} raw points, {} hourly candles after resampling.",
+        samples.len(),
+        hourly.len()
+    );
+
+    if hourly.is_empty() {
+        println!("No hourly data after resampling.");
+        return Ok(());
+    }
+
+    // Use hourly prices for SMA logic
+    let prices: Vec<f64> = hourly.iter().map(|s| s.price).collect();
 
     // For a proper crossover signal we need:
     // - current SMA50 (based on all data)
@@ -55,8 +85,9 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
-    let last_price = *prices.last().unwrap();
-    let ts = last_timestamp.unwrap_or_else(|| "<unknown>".to_string());
+    let last = hourly.last().unwrap();
+    let last_price = last.price;
+    let ts = last.ts.to_rfc3339();
 
     // Current SMAs (using all prices)
     let sma20 = simple_moving_average(&prices, 20).expect("we checked len >= 51");
@@ -67,8 +98,8 @@ fn main() -> Result<()> {
     let prev_sma20 = simple_moving_average(prev_slice, 20).expect("len-1 >= 50");
     let prev_sma50 = simple_moving_average(prev_slice, 50).expect("len-1 >= 50");
 
-    println!("Last timestamp: {}", ts);
-    println!("Last price:     {:.4}", last_price);
+    println!("Last (hourly) timestamp: {}", ts);
+    println!("Last (hourly) price:     {:.4}", last_price);
     println!("SMA(20):        {:.4}", sma20);
     println!("SMA(50):        {:.4}", sma50);
     println!("Prev SMA(20):   {:.4}", prev_sma20);
@@ -83,6 +114,34 @@ fn main() -> Result<()> {
 
     Ok(())
 }
+
+/// Resample raw samples (possibly 5m + 1h mixed) into 1-hour "closes".
+/// For each hour bucket, we keep the *last* price observed in that hour.
+fn resample_to_hourly(samples: &[Sample]) -> Vec<Sample> {
+    let mut buckets: BTreeMap<DateTime<Utc>, Sample> = BTreeMap::new();
+
+    for s in samples {
+        // Truncate to the start of the hour for the bucket key
+        let hour_start =
+            s.ts.with_minute(0)
+                .and_then(|dt| dt.with_second(0))
+                .and_then(|dt| dt.with_nanosecond(0))
+                .expect("valid hour truncation");
+
+        // Because we iterate in chronological order,
+        // inserting again for the same hour will overwrite with the *latest* sample.
+        buckets.insert(
+            hour_start,
+            Sample {
+                ts: s.ts,       // we keep the original timestamp of the last tick in this hour
+                price: s.price, // close price
+            },
+        );
+    }
+
+    buckets.into_values().collect()
+}
+
 /// Compute the simple moving average over the last `window` values.
 /// Returns None if there isn't enough data.
 fn simple_moving_average(prices: &[f64], window: usize) -> Option<f64> {
