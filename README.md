@@ -10,6 +10,10 @@ and analyzes it using SMA20, SMA50, and crossover logic.
 
 The tool detects:
 
+* Breakout above recent high in an uptrend
+* Breakout below recent low in a downtrend
+* Pullback to SMA20 + bounce (uptrend)
+* Pullback to SMA20 + rejection (downtrend)
 * Golden Cross (bullish crossover)
 * Death Cross (bearish crossover)
 * Trend bias (long/short)

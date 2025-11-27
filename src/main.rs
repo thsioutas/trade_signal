@@ -8,6 +8,8 @@ use std::collections::BTreeMap;
 use std::fs::File;
 use std::path::PathBuf;
 
+const BREAKOUT_LOOKBACK: usize = 5;
+
 #[derive(Debug, Parser)]
 struct Args {
     /// Path to the CSV file (timestamp,price)
@@ -105,7 +107,7 @@ fn main() -> Result<()> {
     println!("Prev SMA(20):   {:.4}", prev_sma20);
     println!("Prev SMA(50):   {:.4}", prev_sma50);
 
-    let (suggestion, detail) = suggest_action(last_price, sma20, sma50, prev_sma20, prev_sma50);
+    let (suggestion, detail) = suggest_action(&prices, sma20, sma50, prev_sma20, prev_sma50);
 
     println!("Suggestion:     {}", suggestion);
     if let Some(detail) = detail {
@@ -155,48 +157,196 @@ fn simple_moving_average(prices: &[f64], window: usize) -> Option<f64> {
     Some(sum / window as f64)
 }
 
+/// Check if we have a breakdown below a recent low.
+///
+/// - Lookback N (e.g. 5) means:
+///   Use the last N-1 candles *before* the current one
+///   and see if the last price < min of those lows.
+fn is_breakdown_below_recent_low(prices: &[f64], lookback: usize) -> bool {
+    if prices.len() < lookback + 1 {
+        return false;
+    }
+
+    let last_idx = prices.len() - 1;
+    let start = last_idx.saturating_sub(lookback);
+    // Window: from start .. last_idx (excluding the last candle)
+    let window = &prices[start..last_idx];
+
+    let recent_low = window.iter().copied().fold(f64::INFINITY, f64::min);
+
+    let last_price = prices[last_idx];
+
+    // Small epsilon so exact equality doesn't count as breakdown
+    let epsilon = 1e-6;
+    last_price < recent_low * (1.0 - epsilon)
+}
+
+/// Check if we have a pullback up to SMA20 and rejection down:
+///
+/// Pattern over last 3 closes:
+/// - p2 (2 candles ago) < sma20
+/// - p1 > p2 and near/above sma20
+/// - p0 < sma20 and p0 < p1
+fn is_pullback_to_sma20_and_reject_down(prices: &[f64], sma20: f64) -> bool {
+    if prices.len() < 3 {
+        return false;
+    }
+
+    let n = prices.len();
+    let p2 = prices[n - 3];
+    let p1 = prices[n - 2];
+    let p0 = prices[n - 1];
+
+    let tol = 0.003; // 0.3% below SMA20 considered "touching" from below
+
+    let was_below = p2 < sma20;
+    let pulled_back_near = p1 > p2 && p1 >= sma20 * (1.0 - tol); // close to or slightly above SMA20
+    let rejected = p0 < sma20 && p0 < p1;
+
+    was_below && pulled_back_near && rejected
+}
+
+/// Check if we have a breakout above a recent high.
+///
+/// - Lookback N (e.g. 5) means:
+///   Use the last N-1 candles *before* the current one
+///   and see if the last price > max of those highs.
+fn is_breakout_above_recent_high(prices: &[f64], lookback: usize) -> bool {
+    if prices.len() < lookback + 1 {
+        return false;
+    }
+
+    let last_idx = prices.len() - 1;
+    let start = last_idx.saturating_sub(lookback);
+    // Window: from start .. last_idx (excluding the last candle)
+    let window = &prices[start..last_idx];
+
+    let recent_high = window.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+
+    let last_price = prices[last_idx];
+
+    // Small epsilon so exact equality doesn't count as breakout
+    let epsilon = 1e-6;
+    last_price > recent_high * (1.0 + epsilon)
+}
+
+/// Check if we have a pullback to SMA20 and bounce:
+///
+/// Pattern over last 3 closes:
+/// - p2 (2 candles ago) > sma20
+/// - p1 < p2 and near/under sma20
+/// - p0 > sma20 and p0 > p1
+fn is_pullback_to_sma20_and_bounce(prices: &[f64], sma20: f64) -> bool {
+    if prices.len() < 3 {
+        return false;
+    }
+
+    let n = prices.len();
+    let p2 = prices[n - 3];
+    let p1 = prices[n - 2];
+    let p0 = prices[n - 1];
+
+    let tol = 0.003; // 0.3% above SMA20 considered "touching"
+
+    let was_above = p2 > sma20;
+    let pulled_back_near = p1 < p2 && p1 <= sma20 * (1.0 + tol); // can be slightly above or below SMA20
+    let bounced = p0 > sma20 && p0 > p1;
+
+    was_above && pulled_back_near && bounced
+}
+
 /// Advanced trading rule based on:
+/// - Breakout above recent high in an uptrend
+/// - Breakout below recent low in a downtrend
+/// - Pullback to SMA20 + bounce (uptrend)
+/// - Pullback to SMA20 + rejection (downtrend)
 /// - Golden Cross / Death Cross detection (using previous + current SMAs)
 /// - Trend filter using SMA50 slope
 /// - Price confirmation (price relative to SMA20 & SMA50)
 ///
 /// Returns (short_suggestion, optional_detailed_reason)
 fn suggest_action(
-    last_price: f64,
+    prices: &[f64],
     sma20: f64,
     sma50: f64,
     prev_sma20: f64,
     prev_sma50: f64,
 ) -> (&'static str, Option<&'static str>) {
+    let last_price = *prices.last().unwrap();
+
+    // Trend and slope filters
+    // We combined two separate signals:
+    // * Trend direction (SMA20 > SMA50 or SMA20 < SMA50)
+    // * Trend slope (SMA50 rising or falling)
+    // We did this because:
+    // * Using only SMA50 slope is not enough to define a strong trend.
+    // * Using only SMA20 > SMA50 is not safe without confirming SMA50 is rising.
+    // * Combining them is a stronger, more reliable trend filter.
+    let uptrend = sma20 > sma50 && sma50 >= prev_sma50;
+    let downtrend = sma20 < sma50 && sma50 <= prev_sma50;
+
     // Detect fresh crossovers
     let golden_cross = prev_sma20 <= prev_sma50 && sma20 > sma50;
     let death_cross = prev_sma20 >= prev_sma50 && sma20 < sma50;
-
-    // Trend filter: is SMA50 sloping up or down?
-    let sma50_up = sma50 > prev_sma50;
-    let sma50_down = sma50 < prev_sma50;
 
     // Price confirmation: where is price relative to the MAs?
     let price_above_both = last_price > sma20 && last_price > sma50;
     let price_below_both = last_price < sma20 && last_price < sma50;
 
-    // 1. Strong BUY: fresh Golden Cross in an uptrend with price confirmation
-    if golden_cross && sma50_up && price_above_both {
+    // ~~~~ SELL patterns ~~~~
+
+    // 1. Breakdown below a recent low in a downtrend
+    if downtrend && is_breakdown_below_recent_low(prices, BREAKOUT_LOOKBACK) && price_below_both {
+        return (
+            "SELL",
+            Some("Breakdown below recent low in downtrend (SMA20 < SMA50)"),
+        );
+    }
+
+    // 2. Pullback up to SMA20 + rejection in a downtrend
+    if downtrend && is_pullback_to_sma20_and_reject_down(prices, sma20) {
+        return (
+            "SELL",
+            Some("Pullback up to SMA20 and rejection in downtrend"),
+        );
+    }
+
+    // ~~~~ BUY patterns ~~~~
+
+    // 3. Breakout above a recent high in an uptrend
+    if uptrend && is_breakout_above_recent_high(prices, 5) && price_above_both {
+        return (
+            "BUY",
+            Some("Breakout above recent high in uptrend (SMA20 > SMA50)"),
+        );
+    }
+
+    // 4. Pullback to SMA20 + bounce in an uptrend
+    if uptrend && is_pullback_to_sma20_and_bounce(prices, sma20) {
+        return ("BUY", Some("Pullback to SMA20 and bounce in uptrend"));
+    }
+
+    // ~~~~ Crossovers ~~~~
+
+    // 5. Strong BUY: fresh Golden Cross in an uptrend with price confirmation
+    if golden_cross && uptrend && price_above_both {
         return (
             "BUY",
             Some("Golden Cross + SMA50 rising + price above SMA20 & SMA50"),
         );
     }
 
-    // 2. Strong SELL: fresh Death Cross in a downtrend with price confirmation
-    if death_cross && sma50_down && price_below_both {
+    // 6. Strong SELL: fresh Death Cross in a downtrend with price confirmation
+    if death_cross && downtrend && price_below_both {
         return (
             "SELL",
             Some("Death Cross + SMA50 falling + price below SMA20 & SMA50"),
         );
     }
 
-    // 3. No fresh cross but we are clearly in an uptrend
+    // ~~~~ Bias-only ~~~~
+
+    // 7. No fresh cross but we are clearly in an uptrend
     if sma20 > sma50 && price_above_both {
         return (
             "HOLD / LONG BIAS",
@@ -204,7 +354,7 @@ fn suggest_action(
         );
     }
 
-    // 4. No fresh cross but we are clearly in a downtrend
+    // 8. No fresh cross but we are clearly in a downtrend
     if sma20 < sma50 && price_below_both {
         return (
             "HOLD / SHORT BIAS",
@@ -213,5 +363,8 @@ fn suggest_action(
     }
 
     // 5. Otherwise, no clear edge
-    ("HOLD", Some("No clear crossover or conflicting signals"))
+    (
+        "HOLD",
+        Some("No clear breakout, pullback bounce/rejection, or crossover signal"),
+    )
 }
