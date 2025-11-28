@@ -6,9 +6,7 @@ A small command-line tool that reads a CSV file containing:
 timestamp,price
 ```
 
-and analyzes it using SMA20, SMA50, and crossover logic.
-
-The tool detects:
+and produces a trading signal based on:
 
 * Breakout above recent high in an uptrend
 * Breakout below recent low in a downtrend
@@ -17,7 +15,6 @@ The tool detects:
 * Golden Cross (bullish crossover)
 * Death Cross (bearish crossover)
 * Trend bias (long/short)
-* A suggested action: BUY, SELL, HOLD / LONG BIAS, HOLD / SHORT BIAS, or HOLD.
 
 **Important note:** The tool is meant to be used for analysis only, not real trading.
 
