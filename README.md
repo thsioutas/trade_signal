@@ -55,3 +55,34 @@ Prev SMA(50):   69980.1100
 Suggestion:     BUY
 Reason:         Golden Cross + SMA50 rising + price above SMA20 & SMA50
 ```
+
+## TODOs
+
+Implement:
+
+* Improve volatility filter
+
+* Higher timeframe trend confirmation (eliminate fake breakouts)
+  * Only BUY when dainly SMA50 rising
+  * Only SELL when dainly SMA50 failing
+* Stop-loss and take-profit targets
+
+  ```bash
+  stop = last_price - 2 × ATR
+  take_profit = last_price + 4 × ATR
+  ```
+
+* Volatility-based position sizing
+
+  ``` bash
+  buy_fraction = risk_per_trade / ATR
+  ```
+
+* "No-trade zone" filter
+
+  ```bash
+  if abs(SMA20 - SMA50) / price < 1%:
+      do not trade (no trend)
+  ```
+
+* Optimize the lookbacks

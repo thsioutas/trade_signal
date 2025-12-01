@@ -42,8 +42,10 @@ fn main() -> Result<()> {
         return Ok(());
     };
 
+    let atr_filter = None;
+
     // Perform final analysis
-    let result = sma_analyzer::signal::analyze(&hourly, &prices, smas);
+    let result = sma_analyzer::signal::analyze(&hourly, &prices, smas, atr_filter);
 
     // Print result.clone()
     sma_analyzer::output::print_analysis(&result);

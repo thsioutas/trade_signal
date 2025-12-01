@@ -30,6 +30,10 @@ struct Args {
     /// Fraction of *current position* to sell on each SELL signal (0.0–1.0)
     #[arg(long, default_value_t = 0.01)]
     sell_fraction: f64,
+
+    /// Whether ATR gate filter should be used
+    #[arg(long, default_value_t = false)]
+    atr_enabled: bool,
 }
 
 fn main() -> Result<()> {
@@ -57,6 +61,7 @@ fn main() -> Result<()> {
         fee_bps: args.fee_bps,
         buy_fraction: args.buy_fraction,
         sell_fraction: args.sell_fraction,
+        atr_enabled: args.atr_enabled,
     };
 
     let Some(result) = run_backtest(&hourly, &cfg) else {

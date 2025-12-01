@@ -1,5 +1,5 @@
 use crate::data::Sample;
-use crate::indicators::Smas;
+use crate::indicators::{AtrFilter, Smas};
 use crate::patterns::{
     is_breakdown_below_recent_low, is_breakout_above_recent_high, is_pullback_to_sma20_and_bounce,
     is_pullback_to_sma20_and_reject_down,
@@ -24,9 +24,14 @@ pub struct AnalysisResult {
 /// - Price confirmation (price relative to SMA20 & SMA50)
 ///
 /// Returns (short_suggestion, optional_detailed_reason)
-pub fn analyze(hourly: &[Sample], prices: &[f64], smas: Smas) -> AnalysisResult {
+pub fn analyze(
+    hourly: &[Sample],
+    prices: &[f64],
+    smas: Smas,
+    atr_filter: Option<AtrFilter>,
+) -> AnalysisResult {
     let last = hourly.last().expect("hourly is non-empty").to_owned();
-    let (suggestion, reason) = suggest_action(prices, smas);
+    let (suggestion, reason) = suggest_action(prices, smas, atr_filter);
     AnalysisResult {
         last,
         smas,
@@ -35,8 +40,43 @@ pub fn analyze(hourly: &[Sample], prices: &[f64], smas: Smas) -> AnalysisResult 
     }
 }
 
-fn suggest_action(prices: &[f64], smas: Smas) -> (String, String) {
+fn suggest_action(
+    prices: &[f64],
+    smas: Smas,
+    atr_filter_opt: Option<AtrFilter>,
+) -> (String, String) {
     let last_price = *prices.last().expect("prices is non-empty");
+
+    if let Some(atr_filter) = atr_filter_opt {
+        // ~~~~ Volatility filter (ATR) ~~~~
+        let atr_p = match atr_filter.atr_percent(prices) {
+            Some(v) => v,
+            None => {
+                return (
+                    "HOLD".into(),
+                    format!(
+                        "Insufficient data for ATR({}) volatility filter",
+                        atr_filter.period()
+                    ),
+                );
+            }
+        };
+
+        if atr_p < atr_filter.floor() {
+            let atr_pct = atr_p * 100.0;
+            let floor_pct = atr_filter.floor() * 100.0;
+            return (
+                "HOLD".into(),
+                format!(
+                    "Volatility too low: ATR({}) = {:.2}% < floor {:.2}%",
+                    atr_filter.period(),
+                    atr_pct,
+                    floor_pct
+                ),
+            );
+        }
+    }
+
     // Trend and slope filters
     // We combined two separate signals:
     // * Trend direction (SMA20 > SMA50 or SMA20 < SMA50)
@@ -73,7 +113,7 @@ fn suggest_action(prices: &[f64], smas: Smas) -> (String, String) {
     // ~~~~ BUY patterns ~~~~
 
     // 3. Breakout above a recent high in an uptrend
-    if uptrend && is_breakout_above_recent_high(prices, 5) && price_above_both {
+    if uptrend && is_breakout_above_recent_high(prices, BREAKOUT_LOOKBACK) && price_above_both {
         return (
             "BUY".into(),
             "Breakout above recent high in uptrend (SMA20 > SMA50)".into(),
@@ -218,7 +258,7 @@ mod tests {
         let prices = vec![100.0, 99.0, 98.0, 97.0, 96.0, 90.0];
         let smas = Smas::downtrend_for_breakdown();
 
-        let (suggestion, reason) = super::suggest_action(&prices, smas);
+        let (suggestion, reason) = super::suggest_action(&prices, smas, None);
 
         assert_eq!(suggestion, "SELL");
         assert_eq!(
@@ -238,7 +278,7 @@ mod tests {
         let prices = vec![95.0, 100.0, 98.0];
         let smas = Smas::downtrend_for_pullback();
 
-        let (suggestion, reason) = super::suggest_action(&prices, smas);
+        let (suggestion, reason) = super::suggest_action(&prices, smas, None);
 
         assert_eq!(suggestion, "SELL");
         assert_eq!(reason, "Pullback up to SMA20 and rejection in downtrend");
@@ -252,7 +292,7 @@ mod tests {
         let prices = vec![100.0, 101.0, 102.0, 103.0, 104.0, 110.0];
         let smas = Smas::uptrend_for_breakout();
 
-        let (suggestion, reason) = super::suggest_action(&prices, smas);
+        let (suggestion, reason) = super::suggest_action(&prices, smas, None);
 
         assert_eq!(suggestion, "BUY");
         assert_eq!(
@@ -272,7 +312,7 @@ mod tests {
         let prices = vec![105.0, 100.0, 103.0];
         let smas = Smas::uptrend_for_bounce();
 
-        let (suggestion, reason) = super::suggest_action(&prices, smas);
+        let (suggestion, reason) = super::suggest_action(&prices, smas, None);
 
         assert_eq!(suggestion, "BUY");
         assert_eq!(reason, "Pullback to SMA20 and bounce in uptrend");
@@ -285,7 +325,7 @@ mod tests {
         let prices = vec![100.0, 102.0, 106.0];
         let smas = Smas::golden_cross();
 
-        let (suggestion, reason) = super::suggest_action(&prices, smas);
+        let (suggestion, reason) = super::suggest_action(&prices, smas, None);
 
         assert_eq!(suggestion, "BUY");
         assert_eq!(
@@ -301,7 +341,7 @@ mod tests {
         let prices = vec![100.0, 99.0, 94.0];
         let smas = Smas::death_cross();
 
-        let (suggestion, reason) = super::suggest_action(&prices, smas);
+        let (suggestion, reason) = super::suggest_action(&prices, smas, None);
 
         assert_eq!(suggestion, "SELL");
         assert_eq!(
@@ -317,7 +357,7 @@ mod tests {
         let prices = vec![101.0, 103.0, 106.0];
         let smas = Smas::long_bias_only();
 
-        let (suggestion, reason) = super::suggest_action(&prices, smas);
+        let (suggestion, reason) = super::suggest_action(&prices, smas, None);
 
         assert_eq!(suggestion, "HOLD / LONG BIAS");
         assert_eq!(
@@ -333,7 +373,7 @@ mod tests {
         let prices = vec![100.0, 95.0, 90.0];
         let smas = Smas::short_bias_only();
 
-        let (suggestion, reason) = super::suggest_action(&prices, smas);
+        let (suggestion, reason) = super::suggest_action(&prices, smas, None);
 
         assert_eq!(suggestion, "HOLD / SHORT BIAS");
         assert_eq!(
@@ -353,12 +393,38 @@ mod tests {
             prev_sma50: 100.0,
         };
 
-        let (suggestion, reason) = super::suggest_action(&prices, smas);
+        let (suggestion, reason) = super::suggest_action(&prices, smas, None);
 
         assert_eq!(suggestion, "HOLD");
         assert_eq!(
             reason,
             "No clear breakout, pullback bounce/rejection, or crossover signal"
+        );
+    }
+
+    #[test]
+    fn test_suggest_action_hold_when_volatility_below_floor() {
+        // Flat / almost-flat prices -> ATR% ≈ 0, definitely below a 1% floor.
+        // This should trigger the ATR gate *before* any trend / pattern logic.
+        let prices = vec![100.0; 40]; // enough points for ATR(14) to be computed
+
+        let smas = Smas {
+            sma20: 100.0,
+            sma50: 100.0,
+            prev_sma20: 100.0,
+            prev_sma50: 100.0,
+        };
+
+        // High-ish floor: 1% ATR required.
+        // Since prices are constant, ATR% ≈ 0 -> won't pass the gate
+        let atr_filter = AtrFilter::new_fixed(14, 0.01);
+
+        let (suggestion, reason) = super::suggest_action(&prices, smas, Some(atr_filter));
+
+        assert_eq!(suggestion, "HOLD");
+        assert!(
+            reason.contains("Volatility too low"),
+            "Expected 'Volatility too low' in reason, got: {reason}"
         );
     }
 }

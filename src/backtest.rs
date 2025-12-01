@@ -1,9 +1,7 @@
-// src/backtest.rs
-
 use chrono::{DateTime, Utc};
 
 use crate::data::Sample;
-use crate::indicators::compute_smas;
+use crate::indicators::{AtrFilter, compute_smas};
 use crate::signal::analyze;
 
 #[derive(Debug, Clone)]
@@ -18,6 +16,8 @@ pub struct BacktestConfig {
     pub buy_fraction: f64,
     /// Fraction of *current position* to sell on each SELL signal (0.0–1.0)
     pub sell_fraction: f64,
+    /// Whether ATR gate filter should be used
+    pub atr_enabled: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -58,11 +58,9 @@ fn suggestion_to_signal(s: &str) -> Option<Signal> {
     }
 }
 
-/// Run a simple long-only backtest over hourly candles.
-///
-/// - Uses the existing SMA logic + `analyze` function
-/// - Enters on "BUY" when flat, exits on "SELL" when long
-/// - Always goes all-in (full capital) on each position
+/// Long-only backtest with:
+/// - fractional position sizing
+/// - optional initial coin holdings
 pub fn run_backtest(hourly: &[Sample], cfg: &BacktestConfig) -> Option<BacktestResult> {
     if hourly.len() < 51 {
         // Need at least 51 candles for SMA20/50 logic
@@ -95,6 +93,15 @@ pub fn run_backtest(hourly: &[Sample], cfg: &BacktestConfig) -> Option<BacktestR
     let buy_frac = cfg.buy_fraction.clamp(0.0, 1.0);
     let sell_frac = cfg.sell_fraction.clamp(0.0, 1.0);
 
+    let atr_filter = if cfg.atr_enabled {
+        let atr_prices = hourly.iter().map(|c| c.price).collect::<Vec<f64>>();
+        let atr_filter = AtrFilter::from_history(&atr_prices, 14, 0.4).unwrap();
+        println!("ATR floor to be used: {:.4}", atr_filter.floor());
+        Some(atr_filter)
+    } else {
+        None
+    };
+
     for (i, candle) in hourly.iter().enumerate() {
         let price = candle.price;
         prices.push(price);
@@ -112,7 +119,7 @@ pub fn run_backtest(hourly: &[Sample], cfg: &BacktestConfig) -> Option<BacktestR
             continue;
         };
 
-        let analysis = analyze(&hourly[..=i], &prices, smas);
+        let analysis = analyze(&hourly[..=i], &prices, smas, atr_filter);
         let signal = suggestion_to_signal(&analysis.suggestion);
 
         match signal {
@@ -139,6 +146,9 @@ pub fn run_backtest(hourly: &[Sample], cfg: &BacktestConfig) -> Option<BacktestR
                     in_position = true;
                     entry_time = candle.ts;
                 }
+
+                println!("--- BUY: {} ---", analysis.reason);
+                println!("  qty={} @ {:.4}  ({})", qty, price, candle.ts);
 
                 // Update state
                 cash -= invest_gross; // we spend the gross amount (fee is embedded)
@@ -189,6 +199,9 @@ pub fn run_backtest(hourly: &[Sample], cfg: &BacktestConfig) -> Option<BacktestR
                 } else {
                     0.0
                 };
+
+                println!("--- SELL: {} ---", analysis.reason);
+                println!("  qty={} @ {:.4}  ({})", sell_qty, price, candle.ts);
 
                 trades.push(Trade {
                     entry_time,
@@ -276,10 +289,42 @@ fn compute_win_rate(trades: &[Trade]) -> f64 {
 /// Simple CLI-style summary you can reuse in a binary.
 pub fn print_summary(result: &BacktestResult) {
     println!("=== Backtest Summary ===");
-    println!("Initial equit:  {:.2}", result.initial_equity);
+    println!("Initial equity:  {:.2}", result.initial_equity);
     println!("Final equity:     {:.2}", result.final_equity);
     println!("Total return:     {:.2}%", result.total_return_pct * 100.0);
     println!("Max drawdown:     {:.2}%", result.max_drawdown_pct * 100.0);
     println!("Trades:           {}", result.trades.len());
     println!("Win rate:         {:.2}%", result.win_rate_pct * 100.0);
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use super::*;
+
+    use crate::data::{get_samples_from_input_file, resample_to_hourly};
+
+    #[test]
+    fn test_run_backtest() {
+        let input_file =
+            PathBuf::from("/home/thosio/Documents/crypto_logger/large_dataset/ethereum_eur.csv");
+        let samples = get_samples_from_input_file(&input_file).unwrap();
+
+        let hourly = resample_to_hourly(&samples);
+        let mut frac = 0.1;
+        while frac <= 1.0 {
+            let cfg = BacktestConfig {
+                initial_cash: 1000.0,
+                initial_coin: 0.0,
+                fee_bps: 10.0,
+                buy_fraction: frac,
+                sell_fraction: frac,
+                atr_enabled: false,
+            };
+            let result = run_backtest(&hourly, &cfg).unwrap();
+            print_summary(&result);
+            frac += 0.1;
+        }
+    }
 }
