@@ -5,8 +5,6 @@ use crate::patterns::{
     is_pullback_to_sma20_and_reject_down,
 };
 
-const BREAKOUT_LOOKBACK: usize = 5;
-
 pub struct AnalysisResult {
     pub last: Sample,
     pub smas: Smas,
@@ -29,9 +27,10 @@ pub fn analyze(
     prices: &[f64],
     smas: Smas,
     atr_filter: Option<AtrFilter>,
+    breakout_lookback: usize,
 ) -> AnalysisResult {
     let last = hourly.last().expect("hourly is non-empty").to_owned();
-    let (suggestion, reason) = suggest_action(prices, smas, atr_filter);
+    let (suggestion, reason) = suggest_action(prices, smas, atr_filter, breakout_lookback);
     AnalysisResult {
         last,
         smas,
@@ -44,6 +43,7 @@ fn suggest_action(
     prices: &[f64],
     smas: Smas,
     atr_filter_opt: Option<AtrFilter>,
+    breakout_lookback: usize,
 ) -> (String, String) {
     let last_price = *prices.last().expect("prices is non-empty");
 
@@ -95,7 +95,7 @@ fn suggest_action(
     // ~~~~ SELL patterns ~~~~
 
     // 1. Breakdown below a recent low in a downtrend
-    if downtrend && is_breakdown_below_recent_low(prices, BREAKOUT_LOOKBACK) && price_below_both {
+    if downtrend && is_breakdown_below_recent_low(prices, breakout_lookback) && price_below_both {
         return (
             "SELL".into(),
             "Breakdown below recent low in downtrend (SMA20 < SMA50)".into(),
@@ -113,7 +113,7 @@ fn suggest_action(
     // ~~~~ BUY patterns ~~~~
 
     // 3. Breakout above a recent high in an uptrend
-    if uptrend && is_breakout_above_recent_high(prices, BREAKOUT_LOOKBACK) && price_above_both {
+    if uptrend && is_breakout_above_recent_high(prices, breakout_lookback) && price_above_both {
         return (
             "BUY".into(),
             "Breakout above recent high in uptrend (SMA20 > SMA50)".into(),
@@ -176,6 +176,8 @@ fn suggest_action(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const TEST_BREAKOUT_LOOKBACK: usize = 5;
 
     impl Smas {
         fn downtrend_for_breakdown() -> Self {
@@ -258,7 +260,8 @@ mod tests {
         let prices = vec![100.0, 99.0, 98.0, 97.0, 96.0, 90.0];
         let smas = Smas::downtrend_for_breakdown();
 
-        let (suggestion, reason) = super::suggest_action(&prices, smas, None);
+        let (suggestion, reason) =
+            super::suggest_action(&prices, smas, None, TEST_BREAKOUT_LOOKBACK);
 
         assert_eq!(suggestion, "SELL");
         assert_eq!(
@@ -278,7 +281,8 @@ mod tests {
         let prices = vec![95.0, 100.0, 98.0];
         let smas = Smas::downtrend_for_pullback();
 
-        let (suggestion, reason) = super::suggest_action(&prices, smas, None);
+        let (suggestion, reason) =
+            super::suggest_action(&prices, smas, None, TEST_BREAKOUT_LOOKBACK);
 
         assert_eq!(suggestion, "SELL");
         assert_eq!(reason, "Pullback up to SMA20 and rejection in downtrend");
@@ -292,7 +296,8 @@ mod tests {
         let prices = vec![100.0, 101.0, 102.0, 103.0, 104.0, 110.0];
         let smas = Smas::uptrend_for_breakout();
 
-        let (suggestion, reason) = super::suggest_action(&prices, smas, None);
+        let (suggestion, reason) =
+            super::suggest_action(&prices, smas, None, TEST_BREAKOUT_LOOKBACK);
 
         assert_eq!(suggestion, "BUY");
         assert_eq!(
@@ -312,7 +317,8 @@ mod tests {
         let prices = vec![105.0, 100.0, 103.0];
         let smas = Smas::uptrend_for_bounce();
 
-        let (suggestion, reason) = super::suggest_action(&prices, smas, None);
+        let (suggestion, reason) =
+            super::suggest_action(&prices, smas, None, TEST_BREAKOUT_LOOKBACK);
 
         assert_eq!(suggestion, "BUY");
         assert_eq!(reason, "Pullback to SMA20 and bounce in uptrend");
@@ -325,7 +331,8 @@ mod tests {
         let prices = vec![100.0, 102.0, 106.0];
         let smas = Smas::golden_cross();
 
-        let (suggestion, reason) = super::suggest_action(&prices, smas, None);
+        let (suggestion, reason) =
+            super::suggest_action(&prices, smas, None, TEST_BREAKOUT_LOOKBACK);
 
         assert_eq!(suggestion, "BUY");
         assert_eq!(
@@ -341,7 +348,8 @@ mod tests {
         let prices = vec![100.0, 99.0, 94.0];
         let smas = Smas::death_cross();
 
-        let (suggestion, reason) = super::suggest_action(&prices, smas, None);
+        let (suggestion, reason) =
+            super::suggest_action(&prices, smas, None, TEST_BREAKOUT_LOOKBACK);
 
         assert_eq!(suggestion, "SELL");
         assert_eq!(
@@ -357,7 +365,8 @@ mod tests {
         let prices = vec![101.0, 103.0, 106.0];
         let smas = Smas::long_bias_only();
 
-        let (suggestion, reason) = super::suggest_action(&prices, smas, None);
+        let (suggestion, reason) =
+            super::suggest_action(&prices, smas, None, TEST_BREAKOUT_LOOKBACK);
 
         assert_eq!(suggestion, "HOLD / LONG BIAS");
         assert_eq!(
@@ -373,7 +382,8 @@ mod tests {
         let prices = vec![100.0, 95.0, 90.0];
         let smas = Smas::short_bias_only();
 
-        let (suggestion, reason) = super::suggest_action(&prices, smas, None);
+        let (suggestion, reason) =
+            super::suggest_action(&prices, smas, None, TEST_BREAKOUT_LOOKBACK);
 
         assert_eq!(suggestion, "HOLD / SHORT BIAS");
         assert_eq!(
@@ -393,7 +403,8 @@ mod tests {
             prev_sma50: 100.0,
         };
 
-        let (suggestion, reason) = super::suggest_action(&prices, smas, None);
+        let (suggestion, reason) =
+            super::suggest_action(&prices, smas, None, TEST_BREAKOUT_LOOKBACK);
 
         assert_eq!(suggestion, "HOLD");
         assert_eq!(
@@ -419,7 +430,8 @@ mod tests {
         // Since prices are constant, ATR% ≈ 0 -> won't pass the gate
         let atr_filter = AtrFilter::new_fixed(14, 0.01);
 
-        let (suggestion, reason) = super::suggest_action(&prices, smas, Some(atr_filter));
+        let (suggestion, reason) =
+            super::suggest_action(&prices, smas, Some(atr_filter), TEST_BREAKOUT_LOOKBACK);
 
         assert_eq!(suggestion, "HOLD");
         assert!(

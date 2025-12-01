@@ -18,6 +18,8 @@ pub struct BacktestConfig {
     pub sell_fraction: f64,
     /// Whether ATR gate filter should be used
     pub atr_enabled: bool,
+    /// How many candles to lookback for a brekdown
+    pub breakout_lookback: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -119,7 +121,13 @@ pub fn run_backtest(hourly: &[Sample], cfg: &BacktestConfig) -> Option<BacktestR
             continue;
         };
 
-        let analysis = analyze(&hourly[..=i], &prices, smas, atr_filter);
+        let analysis = analyze(
+            &hourly[..=i],
+            &prices,
+            smas,
+            atr_filter,
+            cfg.breakout_lookback,
+        );
         let signal = suggestion_to_signal(&analysis.suggestion);
 
         match signal {
@@ -145,10 +153,7 @@ pub fn run_backtest(hourly: &[Sample], cfg: &BacktestConfig) -> Option<BacktestR
                 if !in_position && coin == 0.0 {
                     in_position = true;
                     entry_time = candle.ts;
-                }
-
-                println!("--- BUY: {} ---", analysis.reason);
-                println!("  qty={} @ {:.4}  ({})", qty, price, candle.ts);
+                };
 
                 // Update state
                 cash -= invest_gross; // we spend the gross amount (fee is embedded)
@@ -199,9 +204,6 @@ pub fn run_backtest(hourly: &[Sample], cfg: &BacktestConfig) -> Option<BacktestR
                 } else {
                     0.0
                 };
-
-                println!("--- SELL: {} ---", analysis.reason);
-                println!("  qty={} @ {:.4}  ({})", sell_qty, price, candle.ts);
 
                 trades.push(Trade {
                     entry_time,
@@ -295,36 +297,4 @@ pub fn print_summary(result: &BacktestResult) {
     println!("Max drawdown:     {:.2}%", result.max_drawdown_pct * 100.0);
     println!("Trades:           {}", result.trades.len());
     println!("Win rate:         {:.2}%", result.win_rate_pct * 100.0);
-}
-
-#[cfg(test)]
-mod tests {
-    use std::path::PathBuf;
-
-    use super::*;
-
-    use crate::data::{get_samples_from_input_file, resample_to_hourly};
-
-    #[test]
-    fn test_run_backtest() {
-        let input_file =
-            PathBuf::from("/home/thosio/Documents/crypto_logger/large_dataset/ethereum_eur.csv");
-        let samples = get_samples_from_input_file(&input_file).unwrap();
-
-        let hourly = resample_to_hourly(&samples);
-        let mut frac = 0.1;
-        while frac <= 1.0 {
-            let cfg = BacktestConfig {
-                initial_cash: 1000.0,
-                initial_coin: 0.0,
-                fee_bps: 10.0,
-                buy_fraction: frac,
-                sell_fraction: frac,
-                atr_enabled: false,
-            };
-            let result = run_backtest(&hourly, &cfg).unwrap();
-            print_summary(&result);
-            frac += 0.1;
-        }
-    }
 }

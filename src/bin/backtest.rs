@@ -7,7 +7,7 @@ use sma_analyzer::data::{get_samples_from_input_file, resample_to_hourly};
 
 #[derive(Debug, Parser)]
 struct Args {
-    /// Path to the CSV file (timestamp,price)
+    /// Path to the CSV file (timestamp,price)pub
     #[arg(long)]
     input: PathBuf,
 
@@ -34,6 +34,10 @@ struct Args {
     /// Whether ATR gate filter should be used
     #[arg(long, default_value_t = false)]
     atr_enabled: bool,
+
+    /// How many candles to lookback for a brekdown
+    #[arg(long, default_value_t = 5)]
+    breakout_lookback: usize,
 }
 
 fn main() -> Result<()> {
@@ -62,6 +66,7 @@ fn main() -> Result<()> {
         buy_fraction: args.buy_fraction,
         sell_fraction: args.sell_fraction,
         atr_enabled: args.atr_enabled,
+        breakout_lookback: args.breakout_lookback,
     };
 
     let Some(result) = run_backtest(&hourly, &cfg) else {

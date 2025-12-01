@@ -3,6 +3,8 @@ use clap::Parser;
 
 use std::path::PathBuf;
 
+const BREAKDOWN_LOOKBACK: usize = 5;
+
 #[derive(Debug, Parser)]
 struct Args {
     /// Path to the CSV file (timestamp,price)
@@ -45,7 +47,8 @@ fn main() -> Result<()> {
     let atr_filter = None;
 
     // Perform final analysis
-    let result = sma_analyzer::signal::analyze(&hourly, &prices, smas, atr_filter);
+    let result =
+        sma_analyzer::signal::analyze(&hourly, &prices, smas, atr_filter, BREAKDOWN_LOOKBACK);
 
     // Print result.clone()
     sma_analyzer::output::print_analysis(&result);
