@@ -1,5 +1,5 @@
 use crate::data::Sample;
-use crate::indicators::{AtrFilter, Smas};
+use crate::indicators::{AtrFilter, Regime, RegimeFilter, Smas};
 use crate::patterns::{
     is_breakdown_below_recent_low, is_breakout_above_recent_high, is_pullback_to_sma20_and_bounce,
     is_pullback_to_sma20_and_reject_down,
@@ -26,11 +26,13 @@ pub fn analyze(
     hourly: &[Sample],
     prices: &[f64],
     smas: Smas,
-    atr_filter: Option<AtrFilter>,
     breakout_lookback: usize,
+    atr_filter: Option<AtrFilter>,
+    regime_filter: Option<RegimeFilter>,
 ) -> AnalysisResult {
     let last = hourly.last().expect("hourly is non-empty").to_owned();
-    let (suggestion, reason) = suggest_action(prices, smas, atr_filter, breakout_lookback);
+    let (suggestion, reason) =
+        suggest_action(prices, smas, breakout_lookback, atr_filter, regime_filter);
     AnalysisResult {
         last,
         smas,
@@ -42,13 +44,16 @@ pub fn analyze(
 fn suggest_action(
     prices: &[f64],
     smas: Smas,
-    atr_filter_opt: Option<AtrFilter>,
     breakout_lookback: usize,
+    atr_filter_opt: Option<AtrFilter>,
+    regime_filter_opt: Option<RegimeFilter>,
 ) -> (String, String) {
+    // TODO: Consider mocking breakout, atr and regime indicators. Their functionality is already tested by other UTs
+
     let last_price = *prices.last().expect("prices is non-empty");
 
+    // ~~~~ Volatility filter (ATR) ~~~~
     if let Some(atr_filter) = atr_filter_opt {
-        // ~~~~ Volatility filter (ATR) ~~~~
         let atr_p = match atr_filter.atr_percent(prices) {
             Some(v) => v,
             None => {
@@ -77,6 +82,17 @@ fn suggest_action(
         }
     }
 
+    // ~~~~ Regime detection ~~~~
+    let (regime_allows_up_signals, regime_allows_down_singals) = regime_filter_opt
+        .map(|rf| {
+            let regime = rf.detect_regime(prices);
+            (
+                matches!(regime, Regime::TrendingUp),
+                matches!(regime, Regime::TrendingDown),
+            )
+        })
+        .unwrap_or((true, true));
+
     // Trend and slope filters
     // We combined two separate signals:
     // * Trend direction (SMA20 > SMA50 or SMA20 < SMA50)
@@ -95,7 +111,11 @@ fn suggest_action(
     // ~~~~ SELL patterns ~~~~
 
     // 1. Breakdown below a recent low in a downtrend
-    if downtrend && is_breakdown_below_recent_low(prices, breakout_lookback) && price_below_both {
+    if downtrend
+        && regime_allows_down_singals
+        && is_breakdown_below_recent_low(prices, breakout_lookback)
+        && price_below_both
+    {
         return (
             "SELL".into(),
             "Breakdown below recent low in downtrend (SMA20 < SMA50)".into(),
@@ -103,7 +123,10 @@ fn suggest_action(
     }
 
     // 2. Pullback up to SMA20 + rejection in a downtrend
-    if downtrend && is_pullback_to_sma20_and_reject_down(prices, smas.sma20) {
+    if downtrend
+        && regime_allows_down_singals
+        && is_pullback_to_sma20_and_reject_down(prices, smas.sma20)
+    {
         return (
             "SELL".into(),
             "Pullback up to SMA20 and rejection in downtrend".into(),
@@ -113,7 +136,11 @@ fn suggest_action(
     // ~~~~ BUY patterns ~~~~
 
     // 3. Breakout above a recent high in an uptrend
-    if uptrend && is_breakout_above_recent_high(prices, breakout_lookback) && price_above_both {
+    if uptrend
+        && regime_allows_up_signals
+        && is_breakout_above_recent_high(prices, breakout_lookback)
+        && price_above_both
+    {
         return (
             "BUY".into(),
             "Breakout above recent high in uptrend (SMA20 > SMA50)".into(),
@@ -121,7 +148,7 @@ fn suggest_action(
     }
 
     // 4. Pullback to SMA20 + bounce in an uptrend
-    if uptrend && is_pullback_to_sma20_and_bounce(prices, smas.sma20) {
+    if uptrend && regime_allows_up_signals && is_pullback_to_sma20_and_bounce(prices, smas.sma20) {
         return (
             "BUY".into(),
             "Pullback to SMA20 and bounce in uptrend".into(),
@@ -132,7 +159,7 @@ fn suggest_action(
 
     // 5. Strong BUY: fresh Golden Cross in an uptrend with price confirmation
     let golden_cross = smas.prev_sma20 <= smas.prev_sma50 && smas.sma20 > smas.sma50;
-    if golden_cross && uptrend && price_above_both {
+    if golden_cross && uptrend && regime_allows_up_signals && price_above_both {
         return (
             "BUY".into(),
             "Golden Cross + SMA50 rising + price above SMA20 & SMA50".into(),
@@ -141,7 +168,7 @@ fn suggest_action(
 
     // 6. Strong SELL: fresh Death Cross in a downtrend with price confirmation
     let death_cross = smas.prev_sma20 >= smas.prev_sma50 && smas.sma20 < smas.sma50;
-    if death_cross && downtrend && price_below_both {
+    if death_cross && downtrend && regime_allows_down_singals && price_below_both {
         return (
             "SELL".into(),
             "Death Cross + SMA50 falling + price below SMA20 & SMA50".into(),
@@ -151,7 +178,7 @@ fn suggest_action(
     // ~~~~ Bias-only ~~~~
 
     // 7. No fresh cross but we are clearly in an uptrend
-    if smas.sma20 > smas.sma50 && price_above_both {
+    if smas.sma20 > smas.sma50 && regime_allows_up_signals && price_above_both {
         return (
             "HOLD / LONG BIAS".into(),
             "Uptrend (SMA20 > SMA50) and price above both averages".into(),
@@ -159,7 +186,7 @@ fn suggest_action(
     }
 
     // 8. No fresh cross but we are clearly in a downtrend
-    if smas.sma20 < smas.sma50 && price_below_both {
+    if smas.sma20 < smas.sma50 && regime_allows_down_singals && price_below_both {
         return (
             "HOLD / SHORT BIAS".into(),
             "Downtrend (SMA20 < SMA50) and price below both averages".into(),
@@ -261,7 +288,7 @@ mod tests {
         let smas = Smas::downtrend_for_breakdown();
 
         let (suggestion, reason) =
-            super::suggest_action(&prices, smas, None, TEST_BREAKOUT_LOOKBACK);
+            super::suggest_action(&prices, smas, TEST_BREAKOUT_LOOKBACK, None, None);
 
         assert_eq!(suggestion, "SELL");
         assert_eq!(
@@ -282,7 +309,7 @@ mod tests {
         let smas = Smas::downtrend_for_pullback();
 
         let (suggestion, reason) =
-            super::suggest_action(&prices, smas, None, TEST_BREAKOUT_LOOKBACK);
+            super::suggest_action(&prices, smas, TEST_BREAKOUT_LOOKBACK, None, None);
 
         assert_eq!(suggestion, "SELL");
         assert_eq!(reason, "Pullback up to SMA20 and rejection in downtrend");
@@ -297,7 +324,7 @@ mod tests {
         let smas = Smas::uptrend_for_breakout();
 
         let (suggestion, reason) =
-            super::suggest_action(&prices, smas, None, TEST_BREAKOUT_LOOKBACK);
+            super::suggest_action(&prices, smas, TEST_BREAKOUT_LOOKBACK, None, None);
 
         assert_eq!(suggestion, "BUY");
         assert_eq!(
@@ -318,7 +345,7 @@ mod tests {
         let smas = Smas::uptrend_for_bounce();
 
         let (suggestion, reason) =
-            super::suggest_action(&prices, smas, None, TEST_BREAKOUT_LOOKBACK);
+            super::suggest_action(&prices, smas, TEST_BREAKOUT_LOOKBACK, None, None);
 
         assert_eq!(suggestion, "BUY");
         assert_eq!(reason, "Pullback to SMA20 and bounce in uptrend");
@@ -332,7 +359,7 @@ mod tests {
         let smas = Smas::golden_cross();
 
         let (suggestion, reason) =
-            super::suggest_action(&prices, smas, None, TEST_BREAKOUT_LOOKBACK);
+            super::suggest_action(&prices, smas, TEST_BREAKOUT_LOOKBACK, None, None);
 
         assert_eq!(suggestion, "BUY");
         assert_eq!(
@@ -349,7 +376,7 @@ mod tests {
         let smas = Smas::death_cross();
 
         let (suggestion, reason) =
-            super::suggest_action(&prices, smas, None, TEST_BREAKOUT_LOOKBACK);
+            super::suggest_action(&prices, smas, TEST_BREAKOUT_LOOKBACK, None, None);
 
         assert_eq!(suggestion, "SELL");
         assert_eq!(
@@ -366,7 +393,7 @@ mod tests {
         let smas = Smas::long_bias_only();
 
         let (suggestion, reason) =
-            super::suggest_action(&prices, smas, None, TEST_BREAKOUT_LOOKBACK);
+            super::suggest_action(&prices, smas, TEST_BREAKOUT_LOOKBACK, None, None);
 
         assert_eq!(suggestion, "HOLD / LONG BIAS");
         assert_eq!(
@@ -383,7 +410,7 @@ mod tests {
         let smas = Smas::short_bias_only();
 
         let (suggestion, reason) =
-            super::suggest_action(&prices, smas, None, TEST_BREAKOUT_LOOKBACK);
+            super::suggest_action(&prices, smas, TEST_BREAKOUT_LOOKBACK, None, None);
 
         assert_eq!(suggestion, "HOLD / SHORT BIAS");
         assert_eq!(
@@ -404,7 +431,7 @@ mod tests {
         };
 
         let (suggestion, reason) =
-            super::suggest_action(&prices, smas, None, TEST_BREAKOUT_LOOKBACK);
+            super::suggest_action(&prices, smas, TEST_BREAKOUT_LOOKBACK, None, None);
 
         assert_eq!(suggestion, "HOLD");
         assert_eq!(
@@ -430,13 +457,150 @@ mod tests {
         // Since prices are constant, ATR% ≈ 0 -> won't pass the gate
         let atr_filter = AtrFilter::new_fixed(14, 0.01);
 
-        let (suggestion, reason) =
-            super::suggest_action(&prices, smas, Some(atr_filter), TEST_BREAKOUT_LOOKBACK);
+        let (suggestion, reason) = super::suggest_action(
+            &prices,
+            smas,
+            TEST_BREAKOUT_LOOKBACK,
+            Some(atr_filter),
+            None,
+        );
 
         assert_eq!(suggestion, "HOLD");
         assert!(
             reason.contains("Volatility too low"),
             "Expected 'Volatility too low' in reason, got: {reason}"
+        );
+    }
+
+    impl RegimeFilter {
+        fn trending_up_filter() -> Self {
+            Self {
+                long_window: 3,
+                slope_window: 3,
+                min_trend_strength: 0.01, // 1%
+                min_range: 0.0,
+            }
+        }
+
+        fn trending_down_filter() -> Self {
+            Self {
+                long_window: 3,
+                slope_window: 3,
+                min_trend_strength: 0.01,
+                min_range: 0.0,
+            }
+        }
+
+        fn sideways_filter() -> Self {
+            // Parameters that make it hard to classify as trending
+            Self {
+                long_window: 3,
+                slope_window: 3,
+                min_trend_strength: 0.20, // 20% required move -> most of our tiny moves are "sideways"
+                min_range: 0.20,          // and 20% range too
+            }
+        }
+    }
+
+    #[test]
+    fn test_suggest_action_buy_allowed_in_trending_up_regime() {
+        // prices chosen to:
+        // - form an uptrend
+        // - trigger breakout above recent high (lookback=5)
+        // window = [100, 101, 102, 103, 104], last = 110 > 104
+        let prices = vec![100.0, 101.0, 102.0, 103.0, 104.0, 110.0];
+        let smas = Smas::uptrend_for_breakout();
+
+        let regime_filter = RegimeFilter::trending_up_filter();
+
+        let (suggestion, reason) = super::suggest_action(
+            &prices,
+            smas,
+            TEST_BREAKOUT_LOOKBACK,
+            None,
+            Some(regime_filter),
+        );
+
+        assert_eq!(suggestion, "BUY");
+        assert!(
+            reason.contains("Breakout above recent high"),
+            "unexpected reason: {}",
+            reason
+        );
+    }
+
+    #[test]
+    fn test_suggest_action_sell_allowed_in_trending_down_regime() {
+        // Breakdown case:
+        // window = [100, 99, 98, 97, 96], recent_low = 96
+        // last = 90 < 96 => breakdown
+        let prices = vec![100.0, 99.0, 98.0, 97.0, 96.0, 90.0];
+        let smas = Smas::downtrend_for_breakdown();
+
+        let regime_filter = RegimeFilter::trending_down_filter();
+
+        let (suggestion, reason) = super::suggest_action(
+            &prices,
+            smas,
+            TEST_BREAKOUT_LOOKBACK,
+            None,
+            Some(regime_filter),
+        );
+
+        assert_eq!(suggestion, "SELL");
+        assert!(
+            reason.contains("Breakdown below recent low in downtrend"),
+            "unexpected reason: {}",
+            reason
+        );
+    }
+
+    #[test]
+    fn test_suggest_action_sell_blocked_in_sideways_regime() {
+        // Same breakdown pattern + downtrend SMAs, but regime thinks "Sideways".
+        // In that case we don't want strong SELL signals.
+        let prices = vec![100.0, 99.0, 98.0, 97.0, 96.0, 90.0];
+        let smas = Smas::downtrend_for_breakdown();
+
+        let regime_filter = RegimeFilter::sideways_filter();
+
+        let (suggestion, reason) = super::suggest_action(
+            &prices,
+            smas,
+            TEST_BREAKOUT_LOOKBACK,
+            None,
+            Some(regime_filter),
+        );
+
+        assert_eq!(suggestion, "HOLD");
+        assert_eq!(
+            reason,
+            "No clear breakout, pullback bounce/rejection, or crossover signal"
+        );
+    }
+
+    #[test]
+    fn test_suggest_action_buy_blocked_in_sideways_regime() {
+        // Uptrend breakout, but regime says Sideways -> block BUY
+        let prices = vec![100.0, 101.0, 102.0, 103.0, 104.0, 110.0];
+        let smas = Smas::uptrend_for_breakout();
+
+        let regime_filter = RegimeFilter::sideways_filter();
+
+        let (suggestion, reason) = super::suggest_action(
+            &prices,
+            smas,
+            TEST_BREAKOUT_LOOKBACK,
+            None,
+            Some(regime_filter),
+        );
+
+        assert_ne!(suggestion, "BUY");
+        assert!(
+            suggestion == "HOLD" || suggestion.starts_with("HOLD /"),
+            "expected HOLD-like suggestion, got {} ({})",
+            suggestion,
+            reason
         );
     }
 }

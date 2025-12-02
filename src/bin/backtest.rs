@@ -35,6 +35,10 @@ struct Args {
     #[arg(long, default_value_t = false)]
     atr_enabled: bool,
 
+    /// Whether regime filter should be used
+    #[arg(long, default_value_t = false)]
+    regime_enabled: bool,
+
     /// How many candles to lookback for a brekdown
     #[arg(long, default_value_t = 5)]
     breakout_lookback: usize,
@@ -66,6 +70,7 @@ fn main() -> Result<()> {
         buy_fraction: args.buy_fraction,
         sell_fraction: args.sell_fraction,
         atr_enabled: args.atr_enabled,
+        regime_enabled: args.regime_enabled,
         breakout_lookback: args.breakout_lookback,
     };
 

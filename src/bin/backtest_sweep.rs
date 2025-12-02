@@ -44,9 +44,13 @@ struct Args {
     #[arg(long, default_value_t = 10.0)]
     fee_bps: f64,
 
-    /// Enable ATR filter? (for now defaults to false)
+    /// Whether ATR gate filter should be used
     #[arg(long, default_value_t = false)]
     atr_enabled: bool,
+
+    /// Whether regime filter should be used
+    #[arg(long, default_value_t = false)]
+    regime_enabled: bool,
 }
 
 fn main() {
@@ -85,6 +89,7 @@ fn main() {
                 buy_fraction: frac,
                 sell_fraction: frac,
                 atr_enabled: args.atr_enabled,
+                regime_enabled: args.regime_enabled,
                 breakout_lookback: lookback,
             };
 

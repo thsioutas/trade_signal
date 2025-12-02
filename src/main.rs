@@ -45,10 +45,17 @@ fn main() -> Result<()> {
     };
 
     let atr_filter = None;
+    let regime_filter = None;
 
     // Perform final analysis
-    let result =
-        sma_analyzer::signal::analyze(&hourly, &prices, smas, atr_filter, BREAKDOWN_LOOKBACK);
+    let result = sma_analyzer::signal::analyze(
+        &hourly,
+        &prices,
+        smas,
+        BREAKDOWN_LOOKBACK,
+        atr_filter,
+        regime_filter,
+    );
 
     // Print result.clone()
     sma_analyzer::output::print_analysis(&result);

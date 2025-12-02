@@ -1,7 +1,7 @@
 use chrono::{DateTime, Utc};
 
 use crate::data::Sample;
-use crate::indicators::{AtrFilter, compute_smas};
+use crate::indicators::{AtrFilter, RegimeFilter, compute_smas};
 use crate::signal::analyze;
 
 #[derive(Debug, Clone)]
@@ -18,6 +18,8 @@ pub struct BacktestConfig {
     pub sell_fraction: f64,
     /// Whether ATR gate filter should be used
     pub atr_enabled: bool,
+    /// Whether regime filter should be used
+    pub regime_enabled: bool,
     /// How many candles to lookback for a brekdown
     pub breakout_lookback: usize,
 }
@@ -104,6 +106,12 @@ pub fn run_backtest(hourly: &[Sample], cfg: &BacktestConfig) -> Option<BacktestR
         None
     };
 
+    let regime_filter = if cfg.regime_enabled {
+        Some(RegimeFilter::default())
+    } else {
+        None
+    };
+
     for (i, candle) in hourly.iter().enumerate() {
         let price = candle.price;
         prices.push(price);
@@ -125,8 +133,9 @@ pub fn run_backtest(hourly: &[Sample], cfg: &BacktestConfig) -> Option<BacktestR
             &hourly[..=i],
             &prices,
             smas,
-            atr_filter,
             cfg.breakout_lookback,
+            atr_filter,
+            regime_filter,
         );
         let signal = suggestion_to_signal(&analysis.suggestion);
 
