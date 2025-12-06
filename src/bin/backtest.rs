@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use clap::Parser;
 use std::path::PathBuf;
 
-use sma_analyzer::backtest::{BacktestConfig, print_summary, run_backtest};
+use sma_analyzer::backtest::{BacktestConfig, buy_and_hold_equity, print_summary, run_backtest};
 use sma_analyzer::data::{get_samples_from_input_file, resample_to_hourly};
 
 #[derive(Debug, Parser)]
@@ -83,6 +83,10 @@ fn main() -> Result<()> {
     };
 
     print_summary(&result);
+    if let Some(hold_equity) = buy_and_hold_equity(&hourly, cfg.initial_cash, cfg.initial_coin) {
+        println!();
+        println!("Buy & hold final equity: {:.2}", hold_equity);
+    }
 
     Ok(())
 }

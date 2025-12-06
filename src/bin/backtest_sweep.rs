@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use clap::Parser;
 
 use sma_analyzer::{
-    backtest::{BacktestConfig, BacktestResult, print_summary, run_backtest},
+    backtest::{BacktestConfig, BacktestResult, buy_and_hold_equity, print_summary, run_backtest},
     data::{get_samples_from_input_file, resample_to_hourly},
 };
 
@@ -140,6 +140,12 @@ fn main() {
         println!("ATR enabled:       {}", cfg.atr_enabled);
         println!();
         print_summary(&result);
+
+        if let Some(hold_equity) = buy_and_hold_equity(&hourly, cfg.initial_cash, cfg.initial_coin)
+        {
+            println!();
+            println!("Buy & hold final equity: {:.2}", hold_equity);
+        }
     } else {
         println!("No valid backtest result produced.");
     }

@@ -297,6 +297,20 @@ fn compute_win_rate(trades: &[Trade]) -> f64 {
     wins / trades.len() as f64
 }
 
+pub fn buy_and_hold_equity(hourly: &[Sample], initial_cash: f64, initial_coin: f64) -> Option<f64> {
+    if hourly.is_empty() {
+        return None;
+    }
+    let first = hourly.first().unwrap().price;
+    let last = hourly.last().unwrap().price;
+    if first <= 0.0 {
+        return None;
+    }
+
+    let qty = initial_cash / first + initial_coin;
+    Some(qty * last)
+}
+
 /// Simple CLI-style summary you can reuse in a binary.
 pub fn print_summary(result: &BacktestResult) {
     println!("=== Backtest Summary ===");
