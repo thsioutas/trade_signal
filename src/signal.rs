@@ -5,6 +5,44 @@ use crate::patterns::{
     is_pullback_to_sma20_and_reject_down,
 };
 
+#[derive(Clone, Copy, Debug)]
+pub struct StrategyConfig {
+    pub breakouts: Option<BreakoutConfig>,
+    pub enable_pullbacks: bool,
+    pub enable_crossovers: bool,
+    pub enable_bias_only: bool,
+}
+
+impl StrategyConfig {
+    pub fn describe_config(&self) -> String {
+        let mut parts = Vec::new();
+
+        if let Some(b) = &self.breakouts {
+            parts.push(format!("breakout(lookback={})", b.breakout_lookback));
+        }
+        if self.enable_pullbacks {
+            parts.push("pullbacks".to_string());
+        }
+        if self.enable_crossovers {
+            parts.push("crossovers".to_string());
+        }
+        if self.enable_bias_only {
+            parts.push("bias_only".to_string());
+        }
+
+        if parts.is_empty() {
+            "none".to_string()
+        } else {
+            parts.join(" + ")
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct BreakoutConfig {
+    pub breakout_lookback: usize,
+}
+
 pub struct AnalysisResult {
     pub last: Sample,
     pub smas: Smas,
@@ -26,13 +64,12 @@ pub fn analyze(
     hourly: &[Sample],
     prices: &[f64],
     smas: Smas,
-    breakout_lookback: usize,
     atr_filter: Option<AtrFilter>,
     regime_filter: Option<RegimeFilter>,
+    strategy: StrategyConfig,
 ) -> AnalysisResult {
     let last = hourly.last().expect("hourly is non-empty").to_owned();
-    let (suggestion, reason) =
-        suggest_action(prices, smas, breakout_lookback, atr_filter, regime_filter);
+    let (suggestion, reason) = suggest_action(prices, smas, atr_filter, regime_filter, strategy);
     AnalysisResult {
         last,
         smas,
@@ -44,9 +81,9 @@ pub fn analyze(
 fn suggest_action(
     prices: &[f64],
     smas: Smas,
-    breakout_lookback: usize,
     atr_filter_opt: Option<AtrFilter>,
     regime_filter_opt: Option<RegimeFilter>,
+    strategy: StrategyConfig,
 ) -> (String, String) {
     // TODO: Consider mocking breakout, atr and regime indicators. Their functionality is already tested by other UTs
 
@@ -111,19 +148,22 @@ fn suggest_action(
     // ~~~~ SELL patterns ~~~~
 
     // 1. Breakdown below a recent low in a downtrend
-    if downtrend
-        && regime_allows_down_singals
-        && is_breakdown_below_recent_low(prices, breakout_lookback)
-        && price_below_both
-    {
-        return (
-            "SELL".into(),
-            "Breakdown below recent low in downtrend (SMA20 < SMA50)".into(),
-        );
+    if let Some(breakout_lookback) = strategy.breakouts.map(|s| s.breakout_lookback) {
+        if downtrend
+            && regime_allows_down_singals
+            && is_breakdown_below_recent_low(prices, breakout_lookback)
+            && price_below_both
+        {
+            return (
+                "SELL".into(),
+                "Breakdown below recent low in downtrend (SMA20 < SMA50)".into(),
+            );
+        }
     }
 
     // 2. Pullback up to SMA20 + rejection in a downtrend
-    if downtrend
+    if strategy.enable_pullbacks
+        && downtrend
         && regime_allows_down_singals
         && is_pullback_to_sma20_and_reject_down(prices, smas.sma20)
     {
@@ -136,19 +176,25 @@ fn suggest_action(
     // ~~~~ BUY patterns ~~~~
 
     // 3. Breakout above a recent high in an uptrend
-    if uptrend
-        && regime_allows_up_signals
-        && is_breakout_above_recent_high(prices, breakout_lookback)
-        && price_above_both
-    {
-        return (
-            "BUY".into(),
-            "Breakout above recent high in uptrend (SMA20 > SMA50)".into(),
-        );
+    if let Some(breakout_lookback) = strategy.breakouts.map(|s| s.breakout_lookback) {
+        if uptrend
+            && regime_allows_up_signals
+            && is_breakout_above_recent_high(prices, breakout_lookback)
+            && price_above_both
+        {
+            return (
+                "BUY".into(),
+                "Breakout above recent high in uptrend (SMA20 > SMA50)".into(),
+            );
+        }
     }
 
     // 4. Pullback to SMA20 + bounce in an uptrend
-    if uptrend && regime_allows_up_signals && is_pullback_to_sma20_and_bounce(prices, smas.sma20) {
+    if strategy.enable_pullbacks
+        && uptrend
+        && regime_allows_up_signals
+        && is_pullback_to_sma20_and_bounce(prices, smas.sma20)
+    {
         return (
             "BUY".into(),
             "Pullback to SMA20 and bounce in uptrend".into(),
@@ -159,7 +205,12 @@ fn suggest_action(
 
     // 5. Strong BUY: fresh Golden Cross in an uptrend with price confirmation
     let golden_cross = smas.prev_sma20 <= smas.prev_sma50 && smas.sma20 > smas.sma50;
-    if golden_cross && uptrend && regime_allows_up_signals && price_above_both {
+    if strategy.enable_crossovers
+        && golden_cross
+        && uptrend
+        && regime_allows_up_signals
+        && price_above_both
+    {
         return (
             "BUY".into(),
             "Golden Cross + SMA50 rising + price above SMA20 & SMA50".into(),
@@ -168,7 +219,12 @@ fn suggest_action(
 
     // 6. Strong SELL: fresh Death Cross in a downtrend with price confirmation
     let death_cross = smas.prev_sma20 >= smas.prev_sma50 && smas.sma20 < smas.sma50;
-    if death_cross && downtrend && regime_allows_down_singals && price_below_both {
+    if strategy.enable_crossovers
+        && death_cross
+        && downtrend
+        && regime_allows_down_singals
+        && price_below_both
+    {
         return (
             "SELL".into(),
             "Death Cross + SMA50 falling + price below SMA20 & SMA50".into(),
@@ -177,20 +233,22 @@ fn suggest_action(
 
     // ~~~~ Bias-only ~~~~
 
-    // 7. No fresh cross but we are clearly in an uptrend
-    if smas.sma20 > smas.sma50 && regime_allows_up_signals && price_above_both {
-        return (
-            "HOLD / LONG BIAS".into(),
-            "Uptrend (SMA20 > SMA50) and price above both averages".into(),
-        );
-    }
+    if strategy.enable_bias_only {
+        // 7. No fresh cross but we are clearly in an uptrend
+        if smas.sma20 > smas.sma50 && regime_allows_up_signals && price_above_both {
+            return (
+                "HOLD / LONG BIAS".into(),
+                "Uptrend (SMA20 > SMA50) and price above both averages".into(),
+            );
+        }
 
-    // 8. No fresh cross but we are clearly in a downtrend
-    if smas.sma20 < smas.sma50 && regime_allows_down_singals && price_below_both {
-        return (
-            "HOLD / SHORT BIAS".into(),
-            "Downtrend (SMA20 < SMA50) and price below both averages".into(),
-        );
+        // 8. No fresh cross but we are clearly in a downtrend
+        if smas.sma20 < smas.sma50 && regime_allows_down_singals && price_below_both {
+            return (
+                "HOLD / SHORT BIAS".into(),
+                "Downtrend (SMA20 < SMA50) and price below both averages".into(),
+            );
+        }
     }
 
     // 5. Otherwise, no clear edge
@@ -204,7 +262,18 @@ fn suggest_action(
 mod tests {
     use super::*;
 
-    const TEST_BREAKOUT_LOOKBACK: usize = 5;
+    impl StrategyConfig {
+        fn test_config() -> Self {
+            Self {
+                breakouts: Some(BreakoutConfig {
+                    breakout_lookback: 5,
+                }),
+                enable_bias_only: true,
+                enable_crossovers: true,
+                enable_pullbacks: true,
+            }
+        }
+    }
 
     impl Smas {
         fn downtrend_for_breakdown() -> Self {
@@ -288,7 +357,7 @@ mod tests {
         let smas = Smas::downtrend_for_breakdown();
 
         let (suggestion, reason) =
-            super::suggest_action(&prices, smas, TEST_BREAKOUT_LOOKBACK, None, None);
+            super::suggest_action(&prices, smas, None, None, StrategyConfig::test_config());
 
         assert_eq!(suggestion, "SELL");
         assert_eq!(
@@ -309,7 +378,7 @@ mod tests {
         let smas = Smas::downtrend_for_pullback();
 
         let (suggestion, reason) =
-            super::suggest_action(&prices, smas, TEST_BREAKOUT_LOOKBACK, None, None);
+            super::suggest_action(&prices, smas, None, None, StrategyConfig::test_config());
 
         assert_eq!(suggestion, "SELL");
         assert_eq!(reason, "Pullback up to SMA20 and rejection in downtrend");
@@ -324,7 +393,7 @@ mod tests {
         let smas = Smas::uptrend_for_breakout();
 
         let (suggestion, reason) =
-            super::suggest_action(&prices, smas, TEST_BREAKOUT_LOOKBACK, None, None);
+            super::suggest_action(&prices, smas, None, None, StrategyConfig::test_config());
 
         assert_eq!(suggestion, "BUY");
         assert_eq!(
@@ -345,7 +414,7 @@ mod tests {
         let smas = Smas::uptrend_for_bounce();
 
         let (suggestion, reason) =
-            super::suggest_action(&prices, smas, TEST_BREAKOUT_LOOKBACK, None, None);
+            super::suggest_action(&prices, smas, None, None, StrategyConfig::test_config());
 
         assert_eq!(suggestion, "BUY");
         assert_eq!(reason, "Pullback to SMA20 and bounce in uptrend");
@@ -359,7 +428,7 @@ mod tests {
         let smas = Smas::golden_cross();
 
         let (suggestion, reason) =
-            super::suggest_action(&prices, smas, TEST_BREAKOUT_LOOKBACK, None, None);
+            super::suggest_action(&prices, smas, None, None, StrategyConfig::test_config());
 
         assert_eq!(suggestion, "BUY");
         assert_eq!(
@@ -376,7 +445,7 @@ mod tests {
         let smas = Smas::death_cross();
 
         let (suggestion, reason) =
-            super::suggest_action(&prices, smas, TEST_BREAKOUT_LOOKBACK, None, None);
+            super::suggest_action(&prices, smas, None, None, StrategyConfig::test_config());
 
         assert_eq!(suggestion, "SELL");
         assert_eq!(
@@ -393,7 +462,7 @@ mod tests {
         let smas = Smas::long_bias_only();
 
         let (suggestion, reason) =
-            super::suggest_action(&prices, smas, TEST_BREAKOUT_LOOKBACK, None, None);
+            super::suggest_action(&prices, smas, None, None, StrategyConfig::test_config());
 
         assert_eq!(suggestion, "HOLD / LONG BIAS");
         assert_eq!(
@@ -410,7 +479,7 @@ mod tests {
         let smas = Smas::short_bias_only();
 
         let (suggestion, reason) =
-            super::suggest_action(&prices, smas, TEST_BREAKOUT_LOOKBACK, None, None);
+            super::suggest_action(&prices, smas, None, None, StrategyConfig::test_config());
 
         assert_eq!(suggestion, "HOLD / SHORT BIAS");
         assert_eq!(
@@ -431,7 +500,7 @@ mod tests {
         };
 
         let (suggestion, reason) =
-            super::suggest_action(&prices, smas, TEST_BREAKOUT_LOOKBACK, None, None);
+            super::suggest_action(&prices, smas, None, None, StrategyConfig::test_config());
 
         assert_eq!(suggestion, "HOLD");
         assert_eq!(
@@ -460,9 +529,9 @@ mod tests {
         let (suggestion, reason) = super::suggest_action(
             &prices,
             smas,
-            TEST_BREAKOUT_LOOKBACK,
             Some(atr_filter),
             None,
+            StrategyConfig::test_config(),
         );
 
         assert_eq!(suggestion, "HOLD");
@@ -516,9 +585,9 @@ mod tests {
         let (suggestion, reason) = super::suggest_action(
             &prices,
             smas,
-            TEST_BREAKOUT_LOOKBACK,
             None,
             Some(regime_filter),
+            StrategyConfig::test_config(),
         );
 
         assert_eq!(suggestion, "BUY");
@@ -542,9 +611,9 @@ mod tests {
         let (suggestion, reason) = super::suggest_action(
             &prices,
             smas,
-            TEST_BREAKOUT_LOOKBACK,
             None,
             Some(regime_filter),
+            StrategyConfig::test_config(),
         );
 
         assert_eq!(suggestion, "SELL");
@@ -567,9 +636,9 @@ mod tests {
         let (suggestion, reason) = super::suggest_action(
             &prices,
             smas,
-            TEST_BREAKOUT_LOOKBACK,
             None,
             Some(regime_filter),
+            StrategyConfig::test_config(),
         );
 
         assert_eq!(suggestion, "HOLD");
@@ -590,9 +659,9 @@ mod tests {
         let (suggestion, reason) = super::suggest_action(
             &prices,
             smas,
-            TEST_BREAKOUT_LOOKBACK,
             None,
             Some(regime_filter),
+            StrategyConfig::test_config(),
         );
 
         assert_ne!(suggestion, "BUY");

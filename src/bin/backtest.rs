@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
 use clap::Parser;
+use sma_analyzer::signal::{BreakoutConfig, StrategyConfig};
 use std::path::PathBuf;
 
 use sma_analyzer::backtest::{BacktestConfig, buy_and_hold_equity, print_summary, run_backtest};
@@ -40,8 +41,21 @@ struct Args {
     regime_enabled: bool,
 
     /// How many candles to lookback for a brekdown
-    #[arg(long, default_value_t = 5)]
-    breakout_lookback: usize,
+    /// Do not set to not use breakout signals
+    #[arg(long, default_value = None)]
+    breakout_lookback: Option<usize>,
+
+    /// Whether pullback signals should be used
+    #[arg(long, default_value_t = false)]
+    enable_pullbacks: bool,
+
+    /// Whether sma crossover signals should be used
+    #[arg(long, default_value_t = false)]
+    enable_crossovers: bool,
+
+    /// Whether bias_only signals should be used
+    #[arg(long, default_value_t = false)]
+    enable_bias_only: bool,
 }
 
 fn main() -> Result<()> {
@@ -63,6 +77,15 @@ fn main() -> Result<()> {
         hourly.len()
     );
 
+    let strategy = StrategyConfig {
+        breakouts: args.breakout_lookback.map(|v| BreakoutConfig {
+            breakout_lookback: v,
+        }),
+        enable_pullbacks: args.enable_pullbacks,
+        enable_crossovers: args.enable_crossovers,
+        enable_bias_only: args.enable_bias_only,
+    };
+
     let cfg = BacktestConfig {
         initial_cash: args.initial_cash,
         initial_coin: args.initial_coin,
@@ -71,8 +94,18 @@ fn main() -> Result<()> {
         sell_fraction: args.sell_fraction,
         atr_enabled: args.atr_enabled,
         regime_enabled: args.regime_enabled,
-        breakout_lookback: args.breakout_lookback,
+        strategy,
     };
+
+    println!("Initial cash:      {}", cfg.initial_cash);
+    println!("Initial coin:      {}", cfg.initial_coin);
+    println!("Fee bps:           {}", cfg.initial_coin);
+    println!("Fee bps:           {}", cfg.fee_bps);
+    println!("Buy fraction:      {}", cfg.buy_fraction);
+    println!("Sell fraction:     {}", cfg.sell_fraction);
+    println!("ATR enabled:       {}", cfg.atr_enabled);
+    println!("Regime enabled:    {}", cfg.regime_enabled);
+    println!("Strategy:          {}", strategy.describe_config());
 
     let Some(result) = run_backtest(&hourly, &cfg) else {
         println!(

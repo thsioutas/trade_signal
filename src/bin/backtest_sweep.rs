@@ -5,6 +5,7 @@ use clap::Parser;
 use sma_analyzer::{
     backtest::{BacktestConfig, BacktestResult, buy_and_hold_equity, print_summary, run_backtest},
     data::{get_samples_from_input_file, resample_to_hourly},
+    signal::{BreakoutConfig, StrategyConfig},
 };
 
 /// Sweep over backtest parameters (i.e. lookback, buy/sell fractions)
@@ -70,15 +71,16 @@ fn main() {
         return;
     }
 
+    let strategies = generate_strategies(args.min_lookback, args.max_lookback);
+
     let mut best_cfg: Option<BacktestConfig> = None;
     let mut best_result: Option<BacktestResult> = None;
 
     println!("Running parameter sweep...");
-    println!("lookback  frac  return%   dd%   trades");
 
     let steps = args.frac_steps; // e.g. 50 => 0.01 .. 0.50
 
-    for lookback in args.min_lookback..=args.max_lookback {
+    for strategy in strategies {
         for step in 1..=args.frac_steps {
             let frac = (step as f64 / steps as f64) * args.max_fraction;
 
@@ -90,7 +92,7 @@ fn main() {
                 sell_fraction: frac,
                 atr_enabled: args.atr_enabled,
                 regime_enabled: args.regime_enabled,
-                breakout_lookback: lookback,
+                strategy,
             };
 
             let Some(result) = run_backtest(&hourly, &cfg) else {
@@ -99,13 +101,6 @@ fn main() {
 
             let ret_pct = result.total_return_pct * 100.0;
             let dd_pct = result.max_drawdown_pct * 100.0;
-            let trades = result.trades.len();
-
-            // Compact per-config line
-            println!(
-                "{:>7} {:5.2} {:8.2} {:6.2} {:7}",
-                lookback, frac, ret_pct, dd_pct, trades
-            );
 
             // Update "best" by:
             // 1) higher total return
@@ -133,7 +128,7 @@ fn main() {
     println!();
     if let (Some(cfg), Some(result)) = (best_cfg, best_result) {
         println!("=== Best configuration ===");
-        println!("breakout_lookback: {}", cfg.breakout_lookback);
+        println!("strategy:          {}", cfg.strategy.describe_config());
         println!("buy_fraction:      {:.2}", cfg.buy_fraction);
         println!("sell_fraction:     {:.2}", cfg.sell_fraction);
         println!("fee_bps:           {:.2}", cfg.fee_bps);
@@ -149,4 +144,43 @@ fn main() {
     } else {
         println!("No valid backtest result produced.");
     }
+}
+
+fn generate_strategies(min_lookback: usize, max_lookback: usize) -> Vec<StrategyConfig> {
+    let mut strategies = Vec::new();
+
+    for lookback in min_lookback..=max_lookback {
+        // bit 0: breakouts
+        // bit 1: pullbacks
+        // bit 2: crossovers
+        // bit 3: bias_only
+        for mask in 0u8..16 {
+            let enable_breakouts = (mask & 0b0001) != 0;
+            let enable_pullbacks = (mask & 0b0010) != 0;
+            let enable_crossovers = (mask & 0b0100) != 0;
+            let enable_bias_only = (mask & 0b1000) != 0;
+
+            // Skip the totally empty strategy (nothing enabled).
+            if !enable_breakouts && !enable_pullbacks && !enable_crossovers && !enable_bias_only {
+                continue;
+            }
+
+            let strategy = StrategyConfig {
+                breakouts: if enable_breakouts {
+                    Some(BreakoutConfig {
+                        breakout_lookback: lookback,
+                    })
+                } else {
+                    None
+                },
+                enable_pullbacks,
+                enable_crossovers,
+                enable_bias_only,
+            };
+
+            strategies.push(strategy);
+        }
+    }
+
+    strategies
 }

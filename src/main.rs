@@ -1,5 +1,6 @@
 use anyhow::Result;
 use clap::Parser;
+use sma_analyzer::signal::{BreakoutConfig, StrategyConfig};
 
 use std::path::PathBuf;
 
@@ -47,15 +48,18 @@ fn main() -> Result<()> {
     let atr_filter = None;
     let regime_filter = None;
 
+    let strategy = StrategyConfig {
+        breakouts: Some(BreakoutConfig {
+            breakout_lookback: BREAKDOWN_LOOKBACK,
+        }),
+        enable_bias_only: true,
+        enable_crossovers: true,
+        enable_pullbacks: true,
+    };
+
     // Perform final analysis
-    let result = sma_analyzer::signal::analyze(
-        &hourly,
-        &prices,
-        smas,
-        BREAKDOWN_LOOKBACK,
-        atr_filter,
-        regime_filter,
-    );
+    let result =
+        sma_analyzer::signal::analyze(&hourly, &prices, smas, atr_filter, regime_filter, strategy);
 
     // Print result.clone()
     sma_analyzer::output::print_analysis(&result);
