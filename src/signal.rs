@@ -9,7 +9,7 @@ use crate::patterns::{
 #[derive(Clone, Copy, Debug)]
 pub struct StrategyConfig {
     pub breakouts: Option<BreakoutConfig>,
-    pub enable_pullbacks: bool,
+    pub pullbacks: Option<PullbackConfig>,
     pub enable_crossovers: bool,
     pub enable_bias_only: bool,
     pub sma_config: SmaConfig,
@@ -25,8 +25,12 @@ impl StrategyConfig {
         if let Some(b) = &self.breakouts {
             parts.push(format!("breakout(lookback={})", b.breakout_lookback));
         }
-        if self.enable_pullbacks {
+        if let Some(p) = self.pullbacks {
             parts.push("pullbacks".to_string());
+            parts.push(format!(
+                "pullback(bounce={},rejection{})",
+                p.bounce_tolerance_pct, p.reject_tolerance_pct
+            ));
         }
         if self.enable_crossovers {
             parts.push("crossovers".to_string());
@@ -46,6 +50,13 @@ impl StrategyConfig {
 #[derive(Clone, Copy, Debug)]
 pub struct BreakoutConfig {
     pub breakout_lookback: usize,
+}
+
+/// e.g. 0.003 = 0.3% tolerance around SMA
+#[derive(Clone, Copy, Debug)]
+pub struct PullbackConfig {
+    pub bounce_tolerance_pct: f64,
+    pub reject_tolerance_pct: f64,
 }
 
 pub struct AnalysisResult {
@@ -169,10 +180,10 @@ fn suggest_action(
     }
 
     // 2. Pullback up to SMA(short) + rejection in a downtrend
-    if strategy.enable_pullbacks
+    if let Some(rejection_pct) = strategy.pullbacks.map(|p| p.reject_tolerance_pct)
         && downtrend
         && regime_allows_down_singals
-        && is_pullback_to_sma_short_and_reject_down(prices, smas.sma_short)
+        && is_pullback_to_sma_short_and_reject_down(prices, smas.sma_short, rejection_pct)
     {
         return (
             "SELL".into(),
@@ -202,10 +213,10 @@ fn suggest_action(
     }
 
     // 4. Pullback to SMA(short) + bounce in an uptrend
-    if strategy.enable_pullbacks
+    if let Some(bounce_pct) = strategy.pullbacks.map(|p| p.bounce_tolerance_pct)
         && uptrend
         && regime_allows_up_signals
-        && is_pullback_to_sma_short_and_bounce(prices, smas.sma_short)
+        && is_pullback_to_sma_short_and_bounce(prices, smas.sma_short, bounce_pct)
     {
         return (
             "BUY".into(),
@@ -301,7 +312,10 @@ mod tests {
                 }),
                 enable_bias_only: true,
                 enable_crossovers: true,
-                enable_pullbacks: true,
+                pullbacks: Some(PullbackConfig {
+                    bounce_tolerance_pct: 0.003,
+                    reject_tolerance_pct: 0.003,
+                }),
                 sma_config: SmaConfig::sma_20_50(),
             }
         }

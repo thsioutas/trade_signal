@@ -10,7 +10,7 @@ use sma_analyzer::{
     backtest::{BacktestConfig, BacktestResult, buy_and_hold_equity, print_summary, run_backtest},
     data::{get_samples_from_input_file, resample_to_hourly},
     indicators::sma::SmaConfig,
-    signal::{BreakoutConfig, StrategyConfig},
+    signal::{BreakoutConfig, PullbackConfig, StrategyConfig},
 };
 
 const EPS: f64 = 1e-9;
@@ -38,6 +38,14 @@ struct Args {
     /// Max breakout lookback window (e.g. 10)
     #[arg(long, default_value_t = 10)]
     max_lookback: usize,
+
+    /// Min pullback tolerances (e.g. 0.001)
+    #[arg(long, default_value_t = 0.001)]
+    min_pullback_pct: f64,
+
+    /// Max pullback tolerances (e.g. 0.01)
+    #[arg(long, default_value_t = 0.01)]
+    max_pullback_pct: f64,
 
     /// Maximum fraction for buy/sell (e.g. 0.5 = at most 50%)
     #[arg(long, default_value_t = 0.5)]
@@ -77,8 +85,12 @@ fn main() {
         eprintln!("Not enough data for SMA20/50 logic (need >= 51 candles).");
         return;
     }
-
-    let strategies = generate_strategies(args.min_lookback, args.max_lookback);
+    let strategies = generate_strategies(
+        args.min_lookback,
+        args.max_lookback,
+        args.min_pullback_pct,
+        args.max_pullback_pct,
+    );
 
     let steps = args.frac_steps; // e.g. 50 => 0.01 .. 0.50
 
@@ -171,7 +183,12 @@ fn main() {
     }
 }
 
-fn generate_strategies(min_lookback: usize, max_lookback: usize) -> Vec<StrategyConfig> {
+fn generate_strategies(
+    min_lookback: usize,
+    max_lookback: usize,
+    min_pullback_pct: f64,
+    max_pullback_pct: f64,
+) -> Vec<StrategyConfig> {
     let mut strategies = Vec::new();
 
     let short_candidates = [10, 20, 30];
@@ -192,39 +209,102 @@ fn generate_strategies(min_lookback: usize, max_lookback: usize) -> Vec<Strategy
             })
         })
         .collect();
+
+    let step = 0.001_f64;
+    let scale = 1000.0;
+    // Convert bounds to integer "thousandths"
+    let min_pullback_pct = (min_pullback_pct * scale).round() as i64;
+    let max_pullback_pct = (max_pullback_pct * scale).round() as i64;
     for sma_config in sma_configs {
-        for lookback in min_lookback..=max_lookback {
-            // bit 0: breakouts
-            // bit 1: pullbacks
-            // bit 2: crossovers
-            // bit 3: bias_only
-            for mask in 0u8..16 {
-                let enable_breakouts = (mask & 0b0001) != 0;
-                let enable_pullbacks = (mask & 0b0010) != 0;
-                let enable_crossovers = (mask & 0b0100) != 0;
-                let enable_bias_only = (mask & 0b1000) != 0;
+        // bit 0: breakouts
+        // bit 1: pullbacks
+        // bit 2: crossovers
+        // bit 3: bias_only
+        for mask in 0u8..16 {
+            let enable_breakouts = (mask & 0b0001) != 0;
+            let enable_pullbacks = (mask & 0b0010) != 0;
+            let enable_crossovers = (mask & 0b0100) != 0;
+            let enable_bias_only = (mask & 0b1000) != 0;
 
-                // Skip the totally empty strategy (nothing enabled).
-                if !enable_breakouts && !enable_pullbacks && !enable_crossovers && !enable_bias_only
-                {
-                    continue;
+            match (enable_breakouts, enable_pullbacks) {
+                (true, true) => {
+                    for lookback in min_lookback..=max_lookback {
+                        for pullback_bounce_tol in min_pullback_pct..=max_pullback_pct {
+                            for pullback_rejection_tol in min_pullback_pct..=max_pullback_pct {
+                                let pullback_bounce_tol = pullback_bounce_tol as f64 * step;
+                                let pullback_rejection_tol = pullback_rejection_tol as f64 * step;
+                                let strategy = StrategyConfig {
+                                    breakouts: Some(BreakoutConfig {
+                                        breakout_lookback: lookback,
+                                    }),
+                                    pullbacks: Some(PullbackConfig {
+                                        bounce_tolerance_pct: pullback_bounce_tol,
+                                        reject_tolerance_pct: pullback_rejection_tol,
+                                    }),
+                                    enable_crossovers,
+                                    enable_bias_only,
+                                    sma_config,
+                                };
+
+                                strategies.push(strategy);
+                            }
+                        }
+                    }
                 }
+                (true, false) => {
+                    for lookback in min_lookback..=max_lookback {
+                        let strategy = StrategyConfig {
+                            breakouts: Some(BreakoutConfig {
+                                breakout_lookback: lookback,
+                            }),
+                            pullbacks: None,
+                            enable_crossovers,
+                            enable_bias_only,
+                            sma_config,
+                        };
 
-                let strategy = StrategyConfig {
-                    breakouts: if enable_breakouts {
-                        Some(BreakoutConfig {
-                            breakout_lookback: lookback,
-                        })
-                    } else {
-                        None
-                    },
-                    enable_pullbacks,
-                    enable_crossovers,
-                    enable_bias_only,
-                    sma_config,
-                };
+                        strategies.push(strategy);
+                    }
+                }
+                (false, true) => {
+                    for pullback_bounce_tol in min_pullback_pct..=max_pullback_pct {
+                        for pullback_rejection_tol in min_pullback_pct..=max_pullback_pct {
+                            let pullback_bounce_tol = pullback_bounce_tol as f64 * step;
+                            let pullback_rejection_tol = pullback_rejection_tol as f64 * step;
+                            let strategy = StrategyConfig {
+                                breakouts: None,
+                                pullbacks: Some(PullbackConfig {
+                                    bounce_tolerance_pct: pullback_bounce_tol,
+                                    reject_tolerance_pct: pullback_rejection_tol,
+                                }),
+                                enable_crossovers,
+                                enable_bias_only,
+                                sma_config,
+                            };
 
-                strategies.push(strategy);
+                            strategies.push(strategy);
+                        }
+                    }
+                }
+                (false, false) => {
+                    // Skip the totally empty strategy (nothing enabled).
+                    if !enable_breakouts
+                        && !enable_pullbacks
+                        && !enable_crossovers
+                        && !enable_bias_only
+                    {
+                        continue;
+                    }
+                    let strategy = StrategyConfig {
+                        breakouts: None,
+                        pullbacks: None,
+                        enable_crossovers,
+                        enable_bias_only,
+                        sma_config,
+                    };
+
+                    strategies.push(strategy);
+                }
             }
         }
     }

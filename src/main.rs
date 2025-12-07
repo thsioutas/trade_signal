@@ -2,12 +2,13 @@ use anyhow::Result;
 use clap::Parser;
 use sma_analyzer::{
     indicators::sma::SmaConfig,
-    signal::{BreakoutConfig, StrategyConfig},
+    signal::{BreakoutConfig, PullbackConfig, StrategyConfig},
 };
 
 use std::path::PathBuf;
 
 const BREAKDOWN_LOOKBACK: usize = 5;
+const PULLBACK_TOLERANCE_PCT: f64 = 0.003;
 
 #[derive(Debug, Parser)]
 struct Args {
@@ -58,7 +59,10 @@ fn main() -> Result<()> {
         }),
         enable_bias_only: true,
         enable_crossovers: true,
-        enable_pullbacks: true,
+        pullbacks: Some(PullbackConfig {
+            bounce_tolerance_pct: PULLBACK_TOLERANCE_PCT,
+            reject_tolerance_pct: PULLBACK_TOLERANCE_PCT,
+        }),
         sma_config,
     };
 

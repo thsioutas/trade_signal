@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use clap::Parser;
 use sma_analyzer::indicators::sma::SmaConfig;
-use sma_analyzer::signal::{BreakoutConfig, StrategyConfig};
+use sma_analyzer::signal::{BreakoutConfig, PullbackConfig, StrategyConfig};
 use std::path::PathBuf;
 
 use sma_analyzer::backtest::{BacktestConfig, buy_and_hold_equity, print_summary, run_backtest};
@@ -42,9 +42,17 @@ struct Args {
     regime_enabled: bool,
 
     /// How many candles to lookback for a brekdown
-    /// Do not set to not use breakout signals
-    #[arg(long, default_value = None)]
+    /// Do not set to not use breakout patterns
+    #[arg(long)]
     breakout_lookback: Option<usize>,
+
+    /// Do not set to not use pullback patterns
+    #[arg(long)]
+    pullback_bounce_tolerance_pct: Option<f64>,
+
+    /// Do not set to not use pullback patterns
+    #[arg(long)]
+    pullback_rejection_tolerance_pct: Option<f64>,
 
     /// Whether pullback signals should be used
     #[arg(long, default_value_t = false)]
@@ -86,11 +94,36 @@ fn main() -> Result<()> {
         hourly.len()
     );
 
+    let pullbacks = match (
+        args.pullback_bounce_tolerance_pct,
+        args.pullback_rejection_tolerance_pct,
+    ) {
+        (Some(bounce_tolerance_pct), Some(reject_tolerance_pct)) => Some(PullbackConfig {
+            bounce_tolerance_pct,
+            reject_tolerance_pct,
+        }),
+        (None, None) => None,
+        (Some(v), None) => {
+            println!("Using given bounce_tolerance_pct as reject_tolerance_pct");
+            Some(PullbackConfig {
+                bounce_tolerance_pct: v,
+                reject_tolerance_pct: v,
+            })
+        }
+        (None, Some(v)) => {
+            println!("Using given reject_tolerance_pct as bounce_tolerance_pct");
+            Some(PullbackConfig {
+                bounce_tolerance_pct: v,
+                reject_tolerance_pct: v,
+            })
+        }
+    };
+
     let strategy = StrategyConfig {
         breakouts: args.breakout_lookback.map(|v| BreakoutConfig {
             breakout_lookback: v,
         }),
-        enable_pullbacks: args.enable_pullbacks,
+        pullbacks: pullbacks,
         enable_crossovers: args.enable_crossovers,
         enable_bias_only: args.enable_bias_only,
         sma_config: SmaConfig {

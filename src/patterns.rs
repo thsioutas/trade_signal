@@ -28,7 +28,9 @@ pub fn is_breakdown_below_recent_low(prices: &[f64], lookback: usize) -> bool {
 /// - p2 (2 candles ago) < sma_short
 /// - p1 > p2 and near/above sma_short
 /// - p0 < sma_short and p0 < p1
-pub fn is_pullback_to_sma_short_and_reject_down(prices: &[f64], sma_short: f64) -> bool {
+///
+/// `tol` below SMA(short) considered "touching" from below
+pub fn is_pullback_to_sma_short_and_reject_down(prices: &[f64], sma_short: f64, tol: f64) -> bool {
     if prices.len() < 3 {
         return false;
     }
@@ -37,8 +39,6 @@ pub fn is_pullback_to_sma_short_and_reject_down(prices: &[f64], sma_short: f64) 
     let p2 = prices[n - 3];
     let p1 = prices[n - 2];
     let p0 = prices[n - 1];
-
-    let tol = 0.003; // 0.3% below SMA(short) considered "touching" from below
 
     let was_below = p2 < sma_short;
     let pulled_back_near = p1 > p2 && p1 >= sma_short * (1.0 - tol); // close to or slightly above SMA(short)
@@ -77,7 +77,8 @@ pub fn is_breakout_above_recent_high(prices: &[f64], lookback: usize) -> bool {
 /// - p2 (2 candles ago) > sma_short
 /// - p1 < p2 and near/under sma_short
 /// - p0 > sma_short and p0 > p1
-pub fn is_pullback_to_sma_short_and_bounce(prices: &[f64], sma_short: f64) -> bool {
+/// <tol> above SMA(short) considered "touching"
+pub fn is_pullback_to_sma_short_and_bounce(prices: &[f64], sma_short: f64, tol: f64) -> bool {
     if prices.len() < 3 {
         return false;
     }
@@ -86,8 +87,6 @@ pub fn is_pullback_to_sma_short_and_bounce(prices: &[f64], sma_short: f64) -> bo
     let p2 = prices[n - 3];
     let p1 = prices[n - 2];
     let p0 = prices[n - 1];
-
-    let tol = 0.003; // 0.3% above SMA(short) considered "touching"
 
     let was_above = p2 > sma_short;
     let pulled_back_near = p1 < p2 && p1 <= sma_short * (1.0 + tol); // can be slightly above or below SMA(short)
@@ -191,14 +190,20 @@ mod tests {
     fn test_is_pullback_to_sma_short_and_reject_down_false_when_not_enough_prices() {
         let sma_short = 100.0;
 
-        assert!(!is_pullback_to_sma_short_and_reject_down(&[], sma_short));
+        assert!(!is_pullback_to_sma_short_and_reject_down(
+            &[],
+            sma_short,
+            0.0003
+        ));
         assert!(!is_pullback_to_sma_short_and_reject_down(
             &[99.0],
-            sma_short
+            sma_short,
+            0.0003
         ));
         assert!(!is_pullback_to_sma_short_and_reject_down(
             &[99.0, 100.0],
-            sma_short
+            sma_short,
+            0.0003
         ));
     }
 
@@ -216,7 +221,9 @@ mod tests {
         let prices = vec![95.0, 100.0, 98.0];
         let sma_short = 100.0;
 
-        assert!(is_pullback_to_sma_short_and_reject_down(&prices, sma_short));
+        assert!(is_pullback_to_sma_short_and_reject_down(
+            &prices, sma_short, 0.0003
+        ));
     }
 
     #[test]
@@ -226,7 +233,7 @@ mod tests {
         let sma_short = 100.0;
 
         assert!(!is_pullback_to_sma_short_and_reject_down(
-            &prices, sma_short
+            &prices, sma_short, 0.0003
         ));
     }
 
@@ -237,7 +244,7 @@ mod tests {
         let prices = vec![95.0, 95.0, 94.0]; // p1 is not > p2
 
         assert!(!is_pullback_to_sma_short_and_reject_down(
-            &prices, sma_short
+            &prices, sma_short, 0.0003
         ));
     }
 
@@ -259,7 +266,7 @@ mod tests {
         ];
 
         assert!(!is_pullback_to_sma_short_and_reject_down(
-            &prices, sma_short
+            &prices, sma_short, 0.0003
         ));
     }
 
@@ -277,7 +284,9 @@ mod tests {
             98.0,      // p0 (rejection)
         ];
 
-        assert!(is_pullback_to_sma_short_and_reject_down(&prices, sma_short));
+        assert!(is_pullback_to_sma_short_and_reject_down(
+            &prices, sma_short, 0.0003
+        ));
     }
 
     #[test]
@@ -291,7 +300,7 @@ mod tests {
         ];
 
         assert!(!is_pullback_to_sma_short_and_reject_down(
-            &prices, sma_short
+            &prices, sma_short, 0.0003
         ));
     }
 
@@ -306,7 +315,7 @@ mod tests {
         ];
 
         assert!(!is_pullback_to_sma_short_and_reject_down(
-            &prices, sma_short
+            &prices, sma_short, 0.0003
         ));
     }
 
@@ -319,7 +328,9 @@ mod tests {
         let sma_short = 100.0;
         let prices = vec![1.0, 2.0, 3.0, 95.0, 100.0, 98.0];
 
-        assert!(is_pullback_to_sma_short_and_reject_down(&prices, sma_short));
+        assert!(is_pullback_to_sma_short_and_reject_down(
+            &prices, sma_short, 0.0003
+        ));
     }
 
     #[test]
@@ -420,11 +431,16 @@ mod tests {
     fn test_is_pullback_to_sma_short_and_bounce_false_when_not_enough_prices() {
         let sma_short = 100.0;
 
-        assert!(!is_pullback_to_sma_short_and_bounce(&[], sma_short));
-        assert!(!is_pullback_to_sma_short_and_bounce(&[101.0], sma_short));
+        assert!(!is_pullback_to_sma_short_and_bounce(&[], sma_short, 0.0003));
+        assert!(!is_pullback_to_sma_short_and_bounce(
+            &[101.0],
+            sma_short,
+            0.0003
+        ));
         assert!(!is_pullback_to_sma_short_and_bounce(
             &[101.0, 100.0],
-            sma_short
+            sma_short,
+            0.0003
         ));
     }
 
@@ -441,7 +457,9 @@ mod tests {
         let sma_short = 100.0;
         let prices = vec![105.0, 100.0, 103.0];
 
-        assert!(is_pullback_to_sma_short_and_bounce(&prices, sma_short));
+        assert!(is_pullback_to_sma_short_and_bounce(
+            &prices, sma_short, 0.0003
+        ));
     }
 
     #[test]
@@ -453,7 +471,9 @@ mod tests {
             99.0, 101.0,
         ];
 
-        assert!(!is_pullback_to_sma_short_and_bounce(&prices, sma_short));
+        assert!(!is_pullback_to_sma_short_and_bounce(
+            &prices, sma_short, 0.0003
+        ));
     }
 
     #[test]
@@ -466,7 +486,9 @@ mod tests {
             106.0, // p0
         ];
 
-        assert!(!is_pullback_to_sma_short_and_bounce(&prices, sma_short));
+        assert!(!is_pullback_to_sma_short_and_bounce(
+            &prices, sma_short, 0.0003
+        ));
     }
 
     #[test]
@@ -488,7 +510,9 @@ mod tests {
             105.0,       // p0
         ];
 
-        assert!(!is_pullback_to_sma_short_and_bounce(&prices, sma_short));
+        assert!(!is_pullback_to_sma_short_and_bounce(
+            &prices, sma_short, 0.0003
+        ));
     }
 
     #[test]
@@ -505,7 +529,9 @@ mod tests {
             105.0, // p0 bounce above SMA(short)
         ];
 
-        assert!(is_pullback_to_sma_short_and_bounce(&prices, sma_short));
+        assert!(is_pullback_to_sma_short_and_bounce(
+            &prices, sma_short, 0.0003
+        ));
     }
 
     #[test]
@@ -518,7 +544,9 @@ mod tests {
             99.5,  // p0 below SMA(short) -> no bounce
         ];
 
-        assert!(!is_pullback_to_sma_short_and_bounce(&prices, sma_short));
+        assert!(!is_pullback_to_sma_short_and_bounce(
+            &prices, sma_short, 0.0003
+        ));
     }
 
     #[test]
@@ -531,7 +559,9 @@ mod tests {
             100.0, // p0 == p1 -> no bounce
         ];
 
-        assert!(!is_pullback_to_sma_short_and_bounce(&prices, sma_short));
+        assert!(!is_pullback_to_sma_short_and_bounce(
+            &prices, sma_short, 0.0003
+        ));
     }
 
     #[test]
@@ -543,6 +573,8 @@ mod tests {
         let sma_short = 100.0;
         let prices = vec![1.0, 2.0, 3.0, 105.0, 100.0, 103.0];
 
-        assert!(is_pullback_to_sma_short_and_bounce(&prices, sma_short));
+        assert!(is_pullback_to_sma_short_and_bounce(
+            &prices, sma_short, 0.0003
+        ));
     }
 }
