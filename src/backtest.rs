@@ -125,7 +125,7 @@ pub fn run_backtest(hourly: &[Sample], cfg: &BacktestConfig) -> Option<BacktestR
             continue;
         }
 
-        let Some(smas) = compute_smas(&prices) else {
+        let Some(smas) = compute_smas(&prices, cfg.strategy.sma_config) else {
             continue;
         };
 

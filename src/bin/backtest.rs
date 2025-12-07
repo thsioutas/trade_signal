@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
 use clap::Parser;
+use sma_analyzer::indicators::sma::SmaConfig;
 use sma_analyzer::signal::{BreakoutConfig, StrategyConfig};
 use std::path::PathBuf;
 
@@ -56,6 +57,14 @@ struct Args {
     /// Whether bias_only signals should be used
     #[arg(long, default_value_t = false)]
     enable_bias_only: bool,
+
+    /// SMA short window
+    #[arg(long, default_value_t = 20)]
+    sma_short_window: usize,
+
+    /// SMA long window
+    #[arg(long, default_value_t = 50)]
+    sma_long_window: usize,
 }
 
 fn main() -> Result<()> {
@@ -84,6 +93,10 @@ fn main() -> Result<()> {
         enable_pullbacks: args.enable_pullbacks,
         enable_crossovers: args.enable_crossovers,
         enable_bias_only: args.enable_bias_only,
+        sma_config: SmaConfig {
+            short_window: args.sma_short_window,
+            long_window: args.sma_long_window,
+        },
     };
 
     let cfg = BacktestConfig {

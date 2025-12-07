@@ -1,8 +1,9 @@
 use crate::data::Sample;
+use crate::indicators::sma::SmaConfig;
 use crate::indicators::{AtrFilter, Regime, RegimeFilter, Smas};
 use crate::patterns::{
-    is_breakdown_below_recent_low, is_breakout_above_recent_high, is_pullback_to_sma20_and_bounce,
-    is_pullback_to_sma20_and_reject_down,
+    is_breakdown_below_recent_low, is_breakout_above_recent_high,
+    is_pullback_to_sma_short_and_bounce, is_pullback_to_sma_short_and_reject_down,
 };
 
 #[derive(Clone, Copy, Debug)]
@@ -11,12 +12,16 @@ pub struct StrategyConfig {
     pub enable_pullbacks: bool,
     pub enable_crossovers: bool,
     pub enable_bias_only: bool,
+    pub sma_config: SmaConfig,
 }
 
 impl StrategyConfig {
     pub fn describe_config(&self) -> String {
         let mut parts = Vec::new();
-
+        parts.push(format!(
+            "SMA{}/{}",
+            self.sma_config.short_window, self.sma_config.long_window,
+        ));
         if let Some(b) = &self.breakouts {
             parts.push(format!("breakout(lookback={})", b.breakout_lookback));
         }
@@ -53,11 +58,11 @@ pub struct AnalysisResult {
 /// Advanced trading rule based on:
 /// - Breakout above recent high in an uptrend
 /// - Breakout below recent low in a downtrend
-/// - Pullback to SMA20 + bounce (uptrend)
-/// - Pullback to SMA20 + rejection (downtrend)
+/// - Pullback to SMA(short) + bounce (uptrend)
+/// - Pullback to SMA(short) + rejection (downtrend)
 /// - Golden Cross / Death Cross detection (using previous + current SMAs)
-/// - Trend filter using SMA50 slope
-/// - Price confirmation (price relative to SMA20 & SMA50)
+/// - Trend filter using SMA(long) slope
+/// - Price confirmation (price relative to SMA(short) & SMA(long))
 ///
 /// Returns (short_suggestion, optional_detailed_reason)
 pub fn analyze(
@@ -132,79 +137,89 @@ fn suggest_action(
 
     // Trend and slope filters
     // We combined two separate signals:
-    // * Trend direction (SMA20 > SMA50 or SMA20 < SMA50)
-    // * Trend slope (SMA50 rising or falling)
+    // * Trend direction (SMA(short) > SMA(long) or SMA(short) < SMA(long))
+    // * Trend slope (SMA(long) rising or falling)
     // We did this because:
-    // * Using only SMA50 slope is not enough to define a strong trend.
-    // * Using only SMA20 > SMA50 is not safe without confirming SMA50 is rising.
+    // * Using only SMA(long) slope is not enough to define a strong trend.
+    // * Using only SMA(short) > SMA(long) is not safe without confirming SMA(long) is rising.
     // * Combining them is a stronger, more reliable trend filter.
-    let uptrend = smas.sma20 > smas.sma50 && smas.sma50 >= smas.prev_sma50;
-    let downtrend = smas.sma20 < smas.sma50 && smas.sma50 <= smas.prev_sma50;
+    let uptrend = smas.sma_short > smas.sma_long && smas.sma_long >= smas.prev_sma_long;
+    let downtrend = smas.sma_short < smas.sma_long && smas.sma_long <= smas.prev_sma_long;
 
     // Price confirmation: where is price relative to the MAs?
-    let price_above_both = last_price > smas.sma20 && last_price > smas.sma50;
-    let price_below_both = last_price < smas.sma20 && last_price < smas.sma50;
+    let price_above_both = last_price > smas.sma_short && last_price > smas.sma_long;
+    let price_below_both = last_price < smas.sma_short && last_price < smas.sma_long;
 
     // ~~~~ SELL patterns ~~~~
 
     // 1. Breakdown below a recent low in a downtrend
-    if let Some(breakout_lookback) = strategy.breakouts.map(|s| s.breakout_lookback) {
-        if downtrend
-            && regime_allows_down_singals
-            && is_breakdown_below_recent_low(prices, breakout_lookback)
-            && price_below_both
-        {
-            return (
-                "SELL".into(),
-                "Breakdown below recent low in downtrend (SMA20 < SMA50)".into(),
-            );
-        }
-    }
-
-    // 2. Pullback up to SMA20 + rejection in a downtrend
-    if strategy.enable_pullbacks
+    if let Some(breakout_lookback) = strategy.breakouts.map(|s| s.breakout_lookback)
         && downtrend
         && regime_allows_down_singals
-        && is_pullback_to_sma20_and_reject_down(prices, smas.sma20)
+        && is_breakdown_below_recent_low(prices, breakout_lookback)
+        && price_below_both
     {
         return (
             "SELL".into(),
-            "Pullback up to SMA20 and rejection in downtrend".into(),
+            format!(
+                "Breakdown below recent low in downtrend (SMA{} < SMA{})",
+                strategy.sma_config.short_window, strategy.sma_config.long_window
+            ),
+        );
+    }
+
+    // 2. Pullback up to SMA(short) + rejection in a downtrend
+    if strategy.enable_pullbacks
+        && downtrend
+        && regime_allows_down_singals
+        && is_pullback_to_sma_short_and_reject_down(prices, smas.sma_short)
+    {
+        return (
+            "SELL".into(),
+            format!(
+                "Pullback up to SMA{} and rejection in downtrend",
+                strategy.sma_config.short_window
+            ),
         );
     }
 
     // ~~~~ BUY patterns ~~~~
 
     // 3. Breakout above a recent high in an uptrend
-    if let Some(breakout_lookback) = strategy.breakouts.map(|s| s.breakout_lookback) {
-        if uptrend
-            && regime_allows_up_signals
-            && is_breakout_above_recent_high(prices, breakout_lookback)
-            && price_above_both
-        {
-            return (
-                "BUY".into(),
-                "Breakout above recent high in uptrend (SMA20 > SMA50)".into(),
-            );
-        }
-    }
-
-    // 4. Pullback to SMA20 + bounce in an uptrend
-    if strategy.enable_pullbacks
+    if let Some(breakout_lookback) = strategy.breakouts.map(|s| s.breakout_lookback)
         && uptrend
         && regime_allows_up_signals
-        && is_pullback_to_sma20_and_bounce(prices, smas.sma20)
+        && is_breakout_above_recent_high(prices, breakout_lookback)
+        && price_above_both
     {
         return (
             "BUY".into(),
-            "Pullback to SMA20 and bounce in uptrend".into(),
+            format!(
+                "Breakout above recent high in uptrend (SMA{} > SMA{})",
+                strategy.sma_config.short_window, strategy.sma_config.long_window
+            ),
+        );
+    }
+
+    // 4. Pullback to SMA(short) + bounce in an uptrend
+    if strategy.enable_pullbacks
+        && uptrend
+        && regime_allows_up_signals
+        && is_pullback_to_sma_short_and_bounce(prices, smas.sma_short)
+    {
+        return (
+            "BUY".into(),
+            format!(
+                "Pullback to SMA{} and bounce in uptrend",
+                strategy.sma_config.short_window
+            ),
         );
     }
 
     // ~~~~ Crossovers ~~~~
 
     // 5. Strong BUY: fresh Golden Cross in an uptrend with price confirmation
-    let golden_cross = smas.prev_sma20 <= smas.prev_sma50 && smas.sma20 > smas.sma50;
+    let golden_cross = smas.prev_sma_short <= smas.prev_sma_long && smas.sma_short > smas.sma_long;
     if strategy.enable_crossovers
         && golden_cross
         && uptrend
@@ -213,12 +228,17 @@ fn suggest_action(
     {
         return (
             "BUY".into(),
-            "Golden Cross + SMA50 rising + price above SMA20 & SMA50".into(),
+            format!(
+                "Golden Cross + SMA{} rising + price above SMA{} & SMA{}",
+                strategy.sma_config.long_window,
+                strategy.sma_config.short_window,
+                strategy.sma_config.long_window
+            ),
         );
     }
 
     // 6. Strong SELL: fresh Death Cross in a downtrend with price confirmation
-    let death_cross = smas.prev_sma20 >= smas.prev_sma50 && smas.sma20 < smas.sma50;
+    let death_cross = smas.prev_sma_short >= smas.prev_sma_long && smas.sma_short < smas.sma_long;
     if strategy.enable_crossovers
         && death_cross
         && downtrend
@@ -227,7 +247,12 @@ fn suggest_action(
     {
         return (
             "SELL".into(),
-            "Death Cross + SMA50 falling + price below SMA20 & SMA50".into(),
+            format!(
+                "Death Cross + SMA{} falling + price below SMA{} & SMA{}",
+                strategy.sma_config.long_window,
+                strategy.sma_config.short_window,
+                strategy.sma_config.long_window
+            ),
         );
     }
 
@@ -235,18 +260,24 @@ fn suggest_action(
 
     if strategy.enable_bias_only {
         // 7. No fresh cross but we are clearly in an uptrend
-        if smas.sma20 > smas.sma50 && regime_allows_up_signals && price_above_both {
+        if smas.sma_short > smas.sma_long && regime_allows_up_signals && price_above_both {
             return (
                 "HOLD / LONG BIAS".into(),
-                "Uptrend (SMA20 > SMA50) and price above both averages".into(),
+                format!(
+                    "Uptrend (SMA{} > SMA{}) and price above both averages",
+                    strategy.sma_config.short_window, strategy.sma_config.long_window
+                ),
             );
         }
 
         // 8. No fresh cross but we are clearly in a downtrend
-        if smas.sma20 < smas.sma50 && regime_allows_down_singals && price_below_both {
+        if smas.sma_short < smas.sma_long && regime_allows_down_singals && price_below_both {
             return (
                 "HOLD / SHORT BIAS".into(),
-                "Downtrend (SMA20 < SMA50) and price below both averages".into(),
+                format!(
+                    "Downtrend (SMA{} < SMA{}) and price below both averages",
+                    strategy.sma_config.short_window, strategy.sma_config.long_window
+                ),
             );
         }
     }
@@ -271,6 +302,7 @@ mod tests {
                 enable_bias_only: true,
                 enable_crossovers: true,
                 enable_pullbacks: true,
+                sma_config: SmaConfig::sma_20_50(),
             }
         }
     }
@@ -278,73 +310,73 @@ mod tests {
     impl Smas {
         fn downtrend_for_breakdown() -> Self {
             Self {
-                sma20: 95.0,
-                sma50: 100.0,
-                prev_sma20: 96.0,
-                prev_sma50: 101.0, // sma50 <= prev_sma50 => 100 <= 101
+                sma_short: 95.0,
+                sma_long: 100.0,
+                prev_sma_short: 96.0,
+                prev_sma_long: 101.0, // sma_long <= prev_sma_long => 100 <= 101
             }
         }
 
         fn downtrend_for_pullback() -> Self {
             Self {
-                sma20: 100.0,
-                sma50: 110.0,
-                prev_sma20: 101.0,
-                prev_sma50: 111.0,
+                sma_short: 100.0,
+                sma_long: 110.0,
+                prev_sma_short: 101.0,
+                prev_sma_long: 111.0,
             }
         }
 
         fn uptrend_for_breakout() -> Self {
             Self {
-                sma20: 105.0,
-                sma50: 100.0,
-                prev_sma20: 104.0,
-                prev_sma50: 99.0, // sma50 >= prev_sma50 => 100 >= 99
+                sma_short: 105.0,
+                sma_long: 100.0,
+                prev_sma_short: 104.0,
+                prev_sma_long: 99.0, // sma_long >= prev_sma_long => 100 >= 99
             }
         }
 
         fn uptrend_for_bounce() -> Self {
             Self {
-                sma20: 100.0,
-                sma50: 95.0,
-                prev_sma20: 99.0,
-                prev_sma50: 94.0,
+                sma_short: 100.0,
+                sma_long: 95.0,
+                prev_sma_short: 99.0,
+                prev_sma_long: 94.0,
             }
         }
 
         fn golden_cross() -> Self {
             Self {
-                sma20: 105.0,
-                sma50: 100.0,
-                prev_sma20: 95.0,
-                prev_sma50: 100.0, // prev_sma20 <= prev_sma50 && sma20 > sma50
+                sma_short: 105.0,
+                sma_long: 100.0,
+                prev_sma_short: 95.0,
+                prev_sma_long: 100.0, // prev_sma_short <= prev_sma_long && sma_short > sma_long
             }
         }
 
         fn death_cross() -> Self {
             Self {
-                sma20: 95.0,
-                sma50: 100.0,
-                prev_sma20: 105.0,
-                prev_sma50: 100.0, // prev_sma20 >= prev_sma50 && sma20 < sma50
+                sma_short: 95.0,
+                sma_long: 100.0,
+                prev_sma_short: 105.0,
+                prev_sma_long: 100.0, // prev_sma_short >= prev_sma_long && sma_short < sma_long
             }
         }
 
         fn long_bias_only() -> Self {
             Self {
-                sma20: 105.0,
-                sma50: 100.0,
-                prev_sma20: 105.0,
-                prev_sma50: 100.0, // no golden cross (prev_sma20 <= prev_sma50 is false)
+                sma_short: 105.0,
+                sma_long: 100.0,
+                prev_sma_short: 105.0,
+                prev_sma_long: 100.0, // no golden cross (prev_sma_short <= prev_sma_long is false)
             }
         }
 
         fn short_bias_only() -> Self {
             Self {
-                sma20: 95.0,
-                sma50: 100.0,
-                prev_sma20: 95.0,
-                prev_sma50: 100.0, // no death cross (prev_sma20 >= prev_sma50 is false)
+                sma_short: 95.0,
+                sma_long: 100.0,
+                prev_sma_short: 95.0,
+                prev_sma_long: 100.0, // no death cross (prev_sma_short >= prev_sma_long is false)
             }
         }
     }
@@ -367,10 +399,10 @@ mod tests {
     }
 
     #[test]
-    fn test_suggest_action_sell_on_pullback_to_sma20_and_rejection_in_downtrend() {
+    fn test_suggest_action_sell_on_pullback_to_sma_short_and_rejection_in_downtrend() {
         // Last 3 candles:
-        // p2 = 95 (below SMA20)
-        // p1 = 100 (pullback to SMA20)
+        // p2 = 95 (below sma_short)
+        // p1 = 100 (pullback to
         // p0 =  98 (reject down)
         //
         // len = 3 => breakdown / breakout can't trigger (need >= 6)
@@ -403,10 +435,10 @@ mod tests {
     }
 
     #[test]
-    fn test_suggest_action_buy_on_pullback_to_sma20_and_bounce_in_uptrend() {
+    fn test_suggest_action_buy_on_pullback_to_sma_short_and_bounce_in_uptrend() {
         // Last 3 candles:
-        // p2 = 105 (> sma20=100)
-        // p1 = 100 (pullback to SMA20)
+        // p2 = 105 (> sma_short=100)
+        // p1 = 100 (pullback to SMA(short))
         // p0 = 103 (bounce above)
         //
         // len = 3 => no breakout/breakdown. Uptrend is true.
@@ -457,7 +489,7 @@ mod tests {
     #[test]
     fn test_suggest_action_hold_long_bias_when_uptrend_but_no_strong_signal() {
         // Uptrend, price above both MAs, but no cross / breakout / pullback pattern.
-        // prices: [101, 103, 106]; p2 = 101 (not > sma20=105) => no bounce pattern.
+        // prices: [101, 103, 106]; p2 = 101 (not > sma_short=105) => no bounce pattern.
         let prices = vec![101.0, 103.0, 106.0];
         let smas = Smas::long_bias_only();
 
@@ -493,10 +525,10 @@ mod tests {
         // Flat SMAs, price neither above nor below both.
         let prices = vec![100.0, 100.0, 100.0];
         let smas = Smas {
-            sma20: 100.0,
-            sma50: 100.0,
-            prev_sma20: 100.0,
-            prev_sma50: 100.0,
+            sma_short: 100.0,
+            sma_long: 100.0,
+            prev_sma_short: 100.0,
+            prev_sma_long: 100.0,
         };
 
         let (suggestion, reason) =
@@ -516,10 +548,10 @@ mod tests {
         let prices = vec![100.0; 40]; // enough points for ATR(14) to be computed
 
         let smas = Smas {
-            sma20: 100.0,
-            sma50: 100.0,
-            prev_sma20: 100.0,
-            prev_sma50: 100.0,
+            sma_short: 100.0,
+            sma_long: 100.0,
+            prev_sma_short: 100.0,
+            prev_sma_long: 100.0,
         };
 
         // High-ish floor: 1% ATR required.

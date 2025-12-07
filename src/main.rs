@@ -1,6 +1,9 @@
 use anyhow::Result;
 use clap::Parser;
-use sma_analyzer::signal::{BreakoutConfig, StrategyConfig};
+use sma_analyzer::{
+    indicators::sma::SmaConfig,
+    signal::{BreakoutConfig, StrategyConfig},
+};
 
 use std::path::PathBuf;
 
@@ -37,7 +40,8 @@ fn main() -> Result<()> {
 
     // Extract prices and compute SMAs
     let prices: Vec<f64> = hourly.iter().map(|s| s.price).collect();
-    let Some(smas) = sma_analyzer::indicators::compute_smas(&prices) else {
+    let sma_config = SmaConfig::sma_20_50();
+    let Some(smas) = sma_analyzer::indicators::compute_smas(&prices, sma_config) else {
         println!(
             "Not enough data: need at least 51 hourly candles for SMA20/50 logic, got {}.",
             prices.len()
@@ -55,6 +59,7 @@ fn main() -> Result<()> {
         enable_bias_only: true,
         enable_crossovers: true,
         enable_pullbacks: true,
+        sma_config,
     };
 
     // Perform final analysis
@@ -62,7 +67,7 @@ fn main() -> Result<()> {
         sma_analyzer::signal::analyze(&hourly, &prices, smas, atr_filter, regime_filter, strategy);
 
     // Print result.clone()
-    sma_analyzer::output::print_analysis(&result);
+    sma_analyzer::output::print_analysis(&result, sma_config);
 
     Ok(())
 }

@@ -5,6 +5,7 @@ use clap::Parser;
 use sma_analyzer::{
     backtest::{BacktestConfig, BacktestResult, buy_and_hold_equity, print_summary, run_backtest},
     data::{get_samples_from_input_file, resample_to_hourly},
+    indicators::sma::SmaConfig,
     signal::{BreakoutConfig, StrategyConfig},
 };
 
@@ -73,15 +74,29 @@ fn main() {
 
     let strategies = generate_strategies(args.min_lookback, args.max_lookback);
 
+    let steps = args.frac_steps; // e.g. 50 => 0.01 .. 0.50
+
+    let total_iters: u64 = strategies.len() as u64 * steps as u64;
+
+    println!(
+        "Running parameter sweep... ({} total combinations)",
+        total_iters
+    );
+
     let mut best_cfg: Option<BacktestConfig> = None;
     let mut best_result: Option<BacktestResult> = None;
 
-    println!("Running parameter sweep...");
-
-    let steps = args.frac_steps; // e.g. 50 => 0.01 .. 0.50
+    let mut done: u64 = 0;
+    let progress_every: u64 = (total_iters / 100).max(1) as u64;
 
     for strategy in strategies {
-        for step in 1..=args.frac_steps {
+        for step in 1..=steps {
+            done += 1;
+            if done.is_multiple_of(progress_every) || done == total_iters {
+                let pct = (done as f64 / total_iters as f64) * 100.0;
+                println!("Progress: {:6.2}% ({}/{})", pct, done, total_iters);
+            }
+
             let frac = (step as f64 / steps as f64) * args.max_fraction;
 
             let cfg = BacktestConfig {
@@ -149,36 +164,58 @@ fn main() {
 fn generate_strategies(min_lookback: usize, max_lookback: usize) -> Vec<StrategyConfig> {
     let mut strategies = Vec::new();
 
-    for lookback in min_lookback..=max_lookback {
-        // bit 0: breakouts
-        // bit 1: pullbacks
-        // bit 2: crossovers
-        // bit 3: bias_only
-        for mask in 0u8..16 {
-            let enable_breakouts = (mask & 0b0001) != 0;
-            let enable_pullbacks = (mask & 0b0010) != 0;
-            let enable_crossovers = (mask & 0b0100) != 0;
-            let enable_bias_only = (mask & 0b1000) != 0;
+    let short_candidates = [10, 20, 30];
+    let long_candidates = [40, 60, 80, 100];
 
-            // Skip the totally empty strategy (nothing enabled).
-            if !enable_breakouts && !enable_pullbacks && !enable_crossovers && !enable_bias_only {
-                continue;
-            }
-
-            let strategy = StrategyConfig {
-                breakouts: if enable_breakouts {
-                    Some(BreakoutConfig {
-                        breakout_lookback: lookback,
-                    })
+    let sma_pairs: Vec<(usize, usize)> = short_candidates
+        .iter()
+        .flat_map(|&short| {
+            long_candidates.iter().filter_map(move |&long| {
+                if long >= short * 2 {
+                    Some((short, long))
                 } else {
                     None
-                },
-                enable_pullbacks,
-                enable_crossovers,
-                enable_bias_only,
-            };
+                }
+            })
+        })
+        .collect();
+    for (long, short) in sma_pairs {
+        for lookback in min_lookback..=max_lookback {
+            // bit 0: breakouts
+            // bit 1: pullbacks
+            // bit 2: crossovers
+            // bit 3: bias_only
+            for mask in 0u8..16 {
+                let enable_breakouts = (mask & 0b0001) != 0;
+                let enable_pullbacks = (mask & 0b0010) != 0;
+                let enable_crossovers = (mask & 0b0100) != 0;
+                let enable_bias_only = (mask & 0b1000) != 0;
 
-            strategies.push(strategy);
+                // Skip the totally empty strategy (nothing enabled).
+                if !enable_breakouts && !enable_pullbacks && !enable_crossovers && !enable_bias_only
+                {
+                    continue;
+                }
+
+                let strategy = StrategyConfig {
+                    breakouts: if enable_breakouts {
+                        Some(BreakoutConfig {
+                            breakout_lookback: lookback,
+                        })
+                    } else {
+                        None
+                    },
+                    enable_pullbacks,
+                    enable_crossovers,
+                    enable_bias_only,
+                    sma_config: SmaConfig {
+                        short_window: short,
+                        long_window: long,
+                    },
+                };
+
+                strategies.push(strategy);
+            }
         }
     }
 
