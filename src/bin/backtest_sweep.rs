@@ -1,6 +1,10 @@
-use std::path::PathBuf;
+use std::{
+    path::PathBuf,
+    sync::atomic::{AtomicU64, Ordering},
+};
 
 use clap::Parser;
+use rayon::prelude::*;
 
 use sma_analyzer::{
     backtest::{BacktestConfig, BacktestResult, buy_and_hold_equity, print_summary, run_backtest},
@@ -8,6 +12,8 @@ use sma_analyzer::{
     indicators::sma::SmaConfig,
     signal::{BreakoutConfig, StrategyConfig},
 };
+
+const EPS: f64 = 1e-9;
 
 /// Sweep over backtest parameters (i.e. lookback, buy/sell fractions)
 /// and report the best configuration.
@@ -76,7 +82,14 @@ fn main() {
 
     let steps = args.frac_steps; // e.g. 50 => 0.01 .. 0.50
 
-    let total_iters: u64 = strategies.len() as u64 * steps as u64;
+    let jobs: Vec<_> = strategies
+        .iter()
+        .flat_map(|&strategy| (1..=steps).map(move |step| (strategy, step)))
+        .collect();
+
+    let total_iters = jobs.len() as u64;
+    let done = AtomicU64::new(0);
+    let progress_every = (total_iters / 100).max(1) as u64;
 
     println!(
         "Running parameter sweep... ({} total combinations)",
@@ -86,19 +99,17 @@ fn main() {
     let mut best_cfg: Option<BacktestConfig> = None;
     let mut best_result: Option<BacktestResult> = None;
 
-    let mut done: u64 = 0;
-    let progress_every: u64 = (total_iters / 100).max(1) as u64;
-
-    for strategy in strategies {
-        for step in 1..=steps {
-            done += 1;
-            if done.is_multiple_of(progress_every) || done == total_iters {
-                let pct = (done as f64 / total_iters as f64) * 100.0;
-                println!("Progress: {:6.2}% ({}/{})", pct, done, total_iters);
+    let best_pair: Option<(BacktestConfig, BacktestResult)> = jobs
+        .into_par_iter()
+        .filter_map(|(strategy, step)| {
+            let current = done.fetch_add(1, Ordering::Relaxed) + 1;
+            if progress_every != 0
+                && (current.is_multiple_of(progress_every) || current == total_iters)
+            {
+                let pct = (current as f64 / total_iters as f64) * 100.0;
+                println!("Progress: {:6.2}% ({}/{})", pct, current, total_iters);
             }
-
             let frac = (step as f64 / steps as f64) * args.max_fraction;
-
             let cfg = BacktestConfig {
                 initial_cash: args.initial_cash,
                 initial_coin: args.initial_coin,
@@ -109,35 +120,34 @@ fn main() {
                 regime_enabled: args.regime_enabled,
                 strategy,
             };
+            let result = run_backtest(&hourly, &cfg)?;
+            Some((cfg, result))
+        })
+        .reduce_with(|(cfg_a, res_a), (cfg_b, res_b)| {
+            let a_ret = res_a.total_return_pct;
+            let b_ret = res_b.total_return_pct;
+            let a_dd = res_a.max_drawdown_pct;
+            let b_dd = res_b.max_drawdown_pct;
 
-            let Some(result) = run_backtest(&hourly, &cfg) else {
-                continue;
+            // "Better" = higher total return, tie-break by lower drawdown
+            let pick_b = if b_ret > a_ret + EPS {
+                true
+            } else if (b_ret - a_ret).abs() < EPS {
+                b_dd < a_dd
+            } else {
+                false
             };
 
-            let ret_pct = result.total_return_pct * 100.0;
-            let dd_pct = result.max_drawdown_pct * 100.0;
-
-            // Update "best" by:
-            // 1) higher total return
-            // 2) if equal (within tiny epsilon), pick lower drawdown
-            let is_better = match &best_result {
-                None => true,
-                Some(best) => {
-                    if ret_pct > best.total_return_pct * 100.0 + 1e-9 {
-                        true
-                    } else if (ret_pct - best.total_return_pct * 100.0).abs() < 1e-9 {
-                        dd_pct < best.max_drawdown_pct * 100.0
-                    } else {
-                        false
-                    }
-                }
-            };
-
-            if is_better {
-                best_cfg = Some(cfg.clone());
-                best_result = Some(result);
+            if pick_b {
+                (cfg_b, res_b)
+            } else {
+                (cfg_a, res_a)
             }
-        }
+        });
+
+    if let Some((cfg, result)) = best_pair {
+        best_cfg = Some(cfg);
+        best_result = Some(result);
     }
 
     println!();
@@ -167,19 +177,22 @@ fn generate_strategies(min_lookback: usize, max_lookback: usize) -> Vec<Strategy
     let short_candidates = [10, 20, 30];
     let long_candidates = [40, 60, 80, 100];
 
-    let sma_pairs: Vec<(usize, usize)> = short_candidates
+    let sma_configs: Vec<SmaConfig> = short_candidates
         .iter()
         .flat_map(|&short| {
             long_candidates.iter().filter_map(move |&long| {
                 if long >= short * 2 {
-                    Some((short, long))
+                    Some(SmaConfig {
+                        short_window: short,
+                        long_window: long,
+                    })
                 } else {
                     None
                 }
             })
         })
         .collect();
-    for (long, short) in sma_pairs {
+    for sma_config in sma_configs {
         for lookback in min_lookback..=max_lookback {
             // bit 0: breakouts
             // bit 1: pullbacks
@@ -208,10 +221,7 @@ fn generate_strategies(min_lookback: usize, max_lookback: usize) -> Vec<Strategy
                     enable_pullbacks,
                     enable_crossovers,
                     enable_bias_only,
-                    sma_config: SmaConfig {
-                        short_window: short,
-                        long_window: long,
-                    },
+                    sma_config,
                 };
 
                 strategies.push(strategy);
