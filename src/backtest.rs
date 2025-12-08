@@ -120,7 +120,7 @@ pub fn run_backtest(hourly: &[Sample], cfg: &BacktestConfig) -> Option<BacktestR
         let equity = cash + coin * price;
         equity_curve.push((candle.ts, equity));
 
-        if prices.len() < 51 {
+        if prices.len() < cfg.strategy.sma_config.long_window + 1 {
             // Not enough data yet for SMAs
             continue;
         }

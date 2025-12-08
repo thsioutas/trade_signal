@@ -37,7 +37,7 @@ pub fn simple_moving_average(prices: &[f64], window: usize) -> Option<f64> {
 /// Compute SMA<short>, SMA<long> and their "previous candle" versions.
 /// Returns None if not enough data (needs at least <long+1> prices).
 pub fn compute_smas(prices: &[f64], cfg: SmaConfig) -> Option<Smas> {
-    if prices.len() < 51 {
+    if prices.len() < cfg.long_window + 1 {
         return None;
     }
 
