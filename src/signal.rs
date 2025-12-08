@@ -26,9 +26,8 @@ impl StrategyConfig {
             parts.push(format!("breakout(lookback={})", b.breakout_lookback));
         }
         if let Some(p) = self.pullbacks {
-            parts.push("pullbacks".to_string());
             parts.push(format!(
-                "pullback(bounce={},rejection{})",
+                "pullback(bounce={:.3},rejection{:.3})",
                 p.bounce_tolerance_pct, p.reject_tolerance_pct
             ));
         }

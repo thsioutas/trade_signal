@@ -85,12 +85,11 @@ fn main() {
         eprintln!("Not enough data for SMA20/50 logic (need >= 51 candles).");
         return;
     }
-    let strategies = generate_strategies(
-        args.min_lookback,
-        args.max_lookback,
-        args.min_pullback_pct,
-        args.max_pullback_pct,
-    );
+
+    let pullback_pairs =
+        generate_pullback_pairs(args.min_pullback_pct, args.max_pullback_pct, 0.001);
+
+    let strategies = generate_strategies(args.min_lookback, args.max_lookback, pullback_pairs);
 
     let steps = args.frac_steps; // e.g. 50 => 0.01 .. 0.50
 
@@ -186,8 +185,7 @@ fn main() {
 fn generate_strategies(
     min_lookback: usize,
     max_lookback: usize,
-    min_pullback_pct: f64,
-    max_pullback_pct: f64,
+    pullback_pairs: Vec<(f64, f64)>,
 ) -> Vec<StrategyConfig> {
     let mut strategies = Vec::new();
 
@@ -210,11 +208,6 @@ fn generate_strategies(
         })
         .collect();
 
-    let step = 0.001_f64;
-    let scale = 1000.0;
-    // Convert bounds to integer "thousandths"
-    let min_pullback_pct = (min_pullback_pct * scale).round() as i64;
-    let max_pullback_pct = (max_pullback_pct * scale).round() as i64;
     for sma_config in sma_configs {
         // bit 0: breakouts
         // bit 1: pullbacks
@@ -229,25 +222,21 @@ fn generate_strategies(
             match (enable_breakouts, enable_pullbacks) {
                 (true, true) => {
                     for lookback in min_lookback..=max_lookback {
-                        for pullback_bounce_tol in min_pullback_pct..=max_pullback_pct {
-                            for pullback_rejection_tol in min_pullback_pct..=max_pullback_pct {
-                                let pullback_bounce_tol = pullback_bounce_tol as f64 * step;
-                                let pullback_rejection_tol = pullback_rejection_tol as f64 * step;
-                                let strategy = StrategyConfig {
-                                    breakouts: Some(BreakoutConfig {
-                                        breakout_lookback: lookback,
-                                    }),
-                                    pullbacks: Some(PullbackConfig {
-                                        bounce_tolerance_pct: pullback_bounce_tol,
-                                        reject_tolerance_pct: pullback_rejection_tol,
-                                    }),
-                                    enable_crossovers,
-                                    enable_bias_only,
-                                    sma_config,
-                                };
+                        for (pullback_bounce_tol, pullback_rejection_tol) in &pullback_pairs {
+                            let strategy = StrategyConfig {
+                                breakouts: Some(BreakoutConfig {
+                                    breakout_lookback: lookback,
+                                }),
+                                pullbacks: Some(PullbackConfig {
+                                    bounce_tolerance_pct: *pullback_bounce_tol,
+                                    reject_tolerance_pct: *pullback_rejection_tol,
+                                }),
+                                enable_crossovers,
+                                enable_bias_only,
+                                sma_config,
+                            };
 
-                                strategies.push(strategy);
-                            }
+                            strategies.push(strategy);
                         }
                     }
                 }
@@ -267,23 +256,19 @@ fn generate_strategies(
                     }
                 }
                 (false, true) => {
-                    for pullback_bounce_tol in min_pullback_pct..=max_pullback_pct {
-                        for pullback_rejection_tol in min_pullback_pct..=max_pullback_pct {
-                            let pullback_bounce_tol = pullback_bounce_tol as f64 * step;
-                            let pullback_rejection_tol = pullback_rejection_tol as f64 * step;
-                            let strategy = StrategyConfig {
-                                breakouts: None,
-                                pullbacks: Some(PullbackConfig {
-                                    bounce_tolerance_pct: pullback_bounce_tol,
-                                    reject_tolerance_pct: pullback_rejection_tol,
-                                }),
-                                enable_crossovers,
-                                enable_bias_only,
-                                sma_config,
-                            };
+                    for (pullback_bounce_tol, pullback_rejection_tol) in &pullback_pairs {
+                        let strategy = StrategyConfig {
+                            breakouts: None,
+                            pullbacks: Some(PullbackConfig {
+                                bounce_tolerance_pct: *pullback_bounce_tol,
+                                reject_tolerance_pct: *pullback_rejection_tol,
+                            }),
+                            enable_crossovers,
+                            enable_bias_only,
+                            sma_config,
+                        };
 
-                            strategies.push(strategy);
-                        }
+                        strategies.push(strategy);
                     }
                 }
                 (false, false) => {
@@ -310,4 +295,18 @@ fn generate_strategies(
     }
 
     strategies
+}
+
+fn generate_pullback_pairs(min: f64, max: f64, step: f64) -> Vec<(f64, f64)> {
+    let mut pairs = Vec::new();
+    let mut bounce = min;
+    while bounce <= max {
+        let mut reject = bounce + step;
+        while reject <= max {
+            pairs.push((bounce, reject));
+            reject += step;
+        }
+        bounce += step;
+    }
+    pairs
 }
