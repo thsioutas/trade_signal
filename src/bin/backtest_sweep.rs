@@ -6,7 +6,7 @@ use std::{
 use clap::Parser;
 use rayon::prelude::*;
 
-use sma_analyzer::{
+use trade_signal::{
     backtest::{BacktestConfig, BacktestResult, buy_and_hold_equity, print_summary, run_backtest},
     data::{get_samples_from_input_file, resample_to_hourly},
     indicators::sma::SmaConfig,

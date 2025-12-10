@@ -1,6 +1,6 @@
 use anyhow::Result;
 use clap::Parser;
-use sma_analyzer::{
+use trade_signal::{
     indicators::sma::SmaConfig,
     signal::{BreakoutConfig, PullbackConfig, StrategyConfig},
 };
@@ -21,14 +21,14 @@ fn main() -> Result<()> {
     let args = Args::parse();
 
     // Load raw samples from CSV
-    let samples = sma_analyzer::data::get_samples_from_input_file(&args.input)?;
+    let samples = trade_signal::data::get_samples_from_input_file(&args.input)?;
     if samples.is_empty() {
         println!("No data found in CSV.");
         return Ok(());
     }
 
     // Resample to hourly closes
-    let hourly = sma_analyzer::data::resample_to_hourly(&samples);
+    let hourly = trade_signal::data::resample_to_hourly(&samples);
     println!(
         "Loaded {} raw points, {} hourly candles after resampling.",
         samples.len(),
@@ -42,7 +42,7 @@ fn main() -> Result<()> {
     // Extract prices and compute SMAs
     let prices: Vec<f64> = hourly.iter().map(|s| s.price).collect();
     let sma_config = SmaConfig::sma_20_50();
-    let Some(smas) = sma_analyzer::indicators::compute_smas(&prices, sma_config) else {
+    let Some(smas) = trade_signal::indicators::compute_smas(&prices, sma_config) else {
         println!(
             "Not enough data: need at least 51 hourly candles for SMA20/50 logic, got {}.",
             prices.len()
@@ -68,10 +68,10 @@ fn main() -> Result<()> {
 
     // Perform final analysis
     let result =
-        sma_analyzer::signal::analyze(&hourly, &prices, smas, atr_filter, regime_filter, strategy);
+        trade_signal::signal::analyze(&hourly, &prices, smas, atr_filter, regime_filter, strategy);
 
     // Print result.clone()
-    sma_analyzer::output::print_analysis(&result, sma_config);
+    trade_signal::output::print_analysis(&result, sma_config);
 
     Ok(())
 }

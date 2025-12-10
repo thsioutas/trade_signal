@@ -77,7 +77,7 @@ pub fn is_breakout_above_recent_high(prices: &[f64], lookback: usize) -> bool {
 /// - p2 (2 candles ago) > sma_short
 /// - p1 < p2 and near/under sma_short
 /// - p0 > sma_short and p0 > p1
-/// <tol> above SMA(short) considered "touching"
+///   <tol> above SMA(short) considered "touching"
 pub fn is_pullback_to_sma_short_and_bounce(prices: &[f64], sma_short: f64, tol: f64) -> bool {
     if prices.len() < 3 {
         return false;

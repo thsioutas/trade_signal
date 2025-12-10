@@ -1,11 +1,11 @@
 use anyhow::{Context, Result};
 use clap::Parser;
-use sma_analyzer::indicators::sma::SmaConfig;
-use sma_analyzer::signal::{BreakoutConfig, PullbackConfig, StrategyConfig};
 use std::path::PathBuf;
+use trade_signal::indicators::sma::SmaConfig;
+use trade_signal::signal::{BreakoutConfig, PullbackConfig, StrategyConfig};
 
-use sma_analyzer::backtest::{BacktestConfig, buy_and_hold_equity, print_summary, run_backtest};
-use sma_analyzer::data::{get_samples_from_input_file, resample_to_hourly};
+use trade_signal::backtest::{BacktestConfig, buy_and_hold_equity, print_summary, run_backtest};
+use trade_signal::data::{get_samples_from_input_file, resample_to_hourly};
 
 #[derive(Debug, Parser)]
 struct Args {
@@ -123,7 +123,7 @@ fn main() -> Result<()> {
         breakouts: args.breakout_lookback.map(|v| BreakoutConfig {
             breakout_lookback: v,
         }),
-        pullbacks: pullbacks,
+        pullbacks,
         enable_crossovers: args.enable_crossovers,
         enable_bias_only: args.enable_bias_only,
         sma_config: SmaConfig {

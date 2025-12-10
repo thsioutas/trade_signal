@@ -1,4 +1,4 @@
-# SMA Analyzer
+# Trade Signal
 
 A small command-line tool that reads a CSV file containing:
 
