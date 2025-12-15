@@ -285,7 +285,7 @@ mod tests {
         ];
 
         assert!(is_pullback_to_sma_short_and_reject_down(
-            &prices, sma_short, 0.0003
+            &prices, sma_short, tol
         ));
     }
 
@@ -511,7 +511,7 @@ mod tests {
         ];
 
         assert!(!is_pullback_to_sma_short_and_bounce(
-            &prices, sma_short, 0.0003
+            &prices, sma_short, tol
         ));
     }
 
@@ -529,9 +529,7 @@ mod tests {
             105.0, // p0 bounce above SMA(short)
         ];
 
-        assert!(is_pullback_to_sma_short_and_bounce(
-            &prices, sma_short, 0.0003
-        ));
+        assert!(is_pullback_to_sma_short_and_bounce(&prices, sma_short, tol));
     }
 
     #[test]
