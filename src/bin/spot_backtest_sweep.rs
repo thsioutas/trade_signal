@@ -88,11 +88,13 @@ fn main() -> Result<()> {
 
     let strategies = generate_strategies(config.min_lookback, config.max_lookback, pullback_pairs);
 
-    let steps = config.buy_sell_frac_steps;
+    let buy_sell_frac_steps = config.buy_sell_frac_steps;
 
     let jobs: Vec<_> = strategies
         .iter()
-        .flat_map(|&strategy| (1..=steps).map(move |step| (strategy, step)))
+        .flat_map(|&strategy| {
+            (1..=buy_sell_frac_steps).map(move |buy_sell_frac_step| (strategy, buy_sell_frac_step))
+        })
         .collect();
 
     let total_iters = jobs.len() as u64;
@@ -109,7 +111,7 @@ fn main() -> Result<()> {
 
     let best_pair: Option<(BacktestConfig, SpotBacktestResult)> = jobs
         .into_par_iter()
-        .filter_map(|(strategy, step)| {
+        .filter_map(|(strategy, buy_sell_frac_step)| {
             let current = done.fetch_add(1, Ordering::Relaxed) + 1;
             if progress_every != 0
                 && (current.is_multiple_of(progress_every) || current == total_iters)
@@ -117,13 +119,14 @@ fn main() -> Result<()> {
                 let pct = (current as f64 / total_iters as f64) * 100.0;
                 println!("Progress: {:6.2}% ({}/{})", pct, current, total_iters);
             }
-            let frac = (step as f64 / steps as f64) * config.max_buy_sell_fraction;
+            let buy_sell_frac = (buy_sell_frac_step as f64 / buy_sell_frac_steps as f64)
+                * config.max_buy_sell_fraction;
             let cfg = BacktestConfig {
                 initial_cash: config.initial_cash,
                 initial_coin: config.initial_coin,
                 fee_bps: config.fee_bps,
-                buy_fraction: frac,
-                sell_fraction: frac,
+                buy_fraction: buy_sell_frac,
+                sell_fraction: buy_sell_frac,
                 strategy,
             };
             let result = run_backtest(&hourly, &cfg)
@@ -165,7 +168,6 @@ fn main() -> Result<()> {
         println!("buy_fraction:      {:.2}", cfg.buy_fraction);
         println!("sell_fraction:     {:.2}", cfg.sell_fraction);
         println!("fee_bps:           {:.2}", cfg.fee_bps);
-        println!("ATR enabled:       {}", cfg.strategy.filters.atr.is_some());
         println!();
         print_summary(&result);
 

@@ -38,6 +38,26 @@ impl StrategyConfig {
         if self.enable_bias_only {
             parts.push("bias_only".to_string());
         }
+        if self.filters.require_price_confirmation {
+            parts.push("require_price_confirmation".to_string());
+        }
+        if self.filters.require_trend_filter {
+            parts.push("require_trend_filter".to_string());
+        }
+        if let Some(atr) = self.filters.atr {
+            let atr_description = format!("atr(floor={}, period={})", atr.floor(), atr.period());
+            parts.push(atr_description);
+        }
+        if let Some(regime) = self.filters.regime {
+            let atr_description = format!(
+                "regime(long_window={}, slope_window={}, min_trend_strength={}, min_range={})",
+                regime.long_window,
+                regime.slope_window,
+                regime.min_trend_strength,
+                regime.min_range
+            );
+            parts.push(atr_description);
+        }
 
         if parts.is_empty() {
             "none".to_string()

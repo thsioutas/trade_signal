@@ -155,8 +155,6 @@ fn main() -> Result<()> {
 
     println!("Initial cash:      {}", cfg.initial_cash);
     println!("Buy fraction:      {}", cfg.buy_fraction);
-    println!("ATR enabled:       {}", cfg.atr_enabled);
-    println!("Regime enabled:    {}", cfg.regime_enabled);
     println!("Strategy:          {}", strategy.describe_config());
 
     let result = run_backtest(&hourly, &cfg).unwrap();

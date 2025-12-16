@@ -165,12 +165,9 @@ fn main() -> Result<()> {
 
     println!("Initial cash:      {}", cfg.initial_cash);
     println!("Initial coin:      {}", cfg.initial_coin);
-    println!("Fee bps:           {}", cfg.initial_coin);
     println!("Fee bps:           {}", cfg.fee_bps);
     println!("Buy fraction:      {}", cfg.buy_fraction);
     println!("Sell fraction:     {}", cfg.sell_fraction);
-    println!("ATR enabled:       {}", config.atr_enabled);
-    println!("Regime enabled:    {}", config.regime_enabled);
     println!("Strategy:          {}", strategy.describe_config());
 
     let result = run_backtest(&hourly, &cfg).unwrap();
