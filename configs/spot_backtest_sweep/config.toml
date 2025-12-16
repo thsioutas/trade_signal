@@ -1,0 +1,14 @@
+input           = "/home/thosio/Documents/crypto_logger/90d_1h_sample/solana_eur.csv"
+
+initial_cash    = 10000
+initial_coin    = 0.00
+
+min_lookback                = 3
+max_lookback                = 10
+min_pullback_pct            = 0.001
+max_pullback_pct            = 0.01
+
+max_buy_sell_fraction       = 0.5
+buy_sell_frac_steps         = 10
+
+fee_bps                     = 10

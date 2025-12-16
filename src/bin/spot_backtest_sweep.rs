@@ -52,11 +52,11 @@ struct Config {
     max_pullback_pct: f64,
 
     /// Maximum fraction for buy/sell (e.g. 0.5 = at most 50%)
-    max_fraction: f64,
+    max_buy_sell_fraction: f64,
 
     /// Number of steps for buy/sell fraction (0–1).
     /// E.g. 100 => 0.01, 0.02, ..., 1.00
-    frac_steps: usize,
+    buy_sell_frac_steps: usize,
 
     /// Trading fee in basis points (e.g. 10 = 0.10%)
     fee_bps: f64,
@@ -88,7 +88,7 @@ fn main() -> Result<()> {
 
     let strategies = generate_strategies(config.min_lookback, config.max_lookback, pullback_pairs);
 
-    let steps = config.frac_steps;
+    let steps = config.buy_sell_frac_steps;
 
     let jobs: Vec<_> = strategies
         .iter()
@@ -117,7 +117,7 @@ fn main() -> Result<()> {
                 let pct = (current as f64 / total_iters as f64) * 100.0;
                 println!("Progress: {:6.2}% ({}/{})", pct, current, total_iters);
             }
-            let frac = (step as f64 / steps as f64) * config.max_fraction;
+            let frac = (step as f64 / steps as f64) * config.max_buy_sell_fraction;
             let cfg = BacktestConfig {
                 initial_cash: config.initial_cash,
                 initial_coin: config.initial_coin,
@@ -215,7 +215,9 @@ fn generate_strategies(
             let enable_breakouts = (mask & 0b0001) != 0;
             let enable_pullbacks = (mask & 0b0010) != 0;
             let enable_crossovers = (mask & 0b0100) != 0;
-            let enable_bias_only = (mask & 0b1000) != 0;
+            // No need to have this configurable (now)
+            // let enable_bias_only = (mask & 0b1000) != 0;
+            let enable_bias_only = true;
 
             match (enable_breakouts, enable_pullbacks) {
                 (true, true) => {
@@ -289,11 +291,7 @@ fn generate_strategies(
                 }
                 (false, false) => {
                     // Skip the totally empty strategy (nothing enabled).
-                    if !enable_breakouts
-                        && !enable_pullbacks
-                        && !enable_crossovers
-                        && !enable_bias_only
-                    {
+                    if !enable_breakouts && !enable_pullbacks && !enable_crossovers {
                         continue;
                     }
                     let strategy = StrategyConfig {

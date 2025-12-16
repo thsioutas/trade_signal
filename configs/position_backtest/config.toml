@@ -1,0 +1,14 @@
+input           = "/home/thosio/Documents/crypto_logger/90d_1h_sample/solana_eur.csv"
+
+initial_cash    = 10000
+buy_fraction    = 0.01
+
+enable_crossovers           = true
+atr_enabled                 = false
+regime_enabled              = false
+enable_bias_only            = false
+require_price_confirmation  = false
+require_trend_filter        = false
+sma_short_window            = 20
+sma_long_window             = 50
+# breakout_lookback           = 5
