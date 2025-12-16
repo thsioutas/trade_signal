@@ -10,7 +10,7 @@ use trade_signal::signal::{BreakoutConfig, FilterConfig, PullbackConfig, Strateg
 use trade_signal::backtest::position::{
     BacktestConfig, buy_and_hold_equity, print_summary, run_backtest,
 };
-use trade_signal::data::{get_samples_from_input_file, resample_to_hourly};
+use trade_signal::data::{get_samples_from_input_file, resample_to_n_hours};
 
 #[derive(Debug, Parser)]
 struct Args {
@@ -23,6 +23,9 @@ struct Args {
 struct Config {
     /// Path to the CSV file (timestamp,price)pub
     input: PathBuf,
+
+    /// Resample input to <sample_hours> hours (i.e. 1h, 4h, 6h, ...)
+    sample_hours: i64,
 
     /// Initial cash for the backtest
     initial_cash: f64,
@@ -85,7 +88,7 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
-    let hourly = resample_to_hourly(&samples);
+    let hourly = resample_to_n_hours(&samples, config.sample_hours);
 
     println!(
         "Loaded {} raw points, {} hourly candles after resampling.",

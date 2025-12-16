@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use chrono::{DateTime, Timelike, Utc};
+use chrono::{DateTime, Duration, TimeZone, Utc};
 use csv::ReaderBuilder;
 use serde::Deserialize;
 
@@ -40,31 +40,54 @@ pub fn get_samples_from_input_file(input: &PathBuf) -> Result<Vec<Sample>> {
     Ok(samples)
 }
 
-/// Resample raw samples (possibly 5m + 1h mixed) into 1-hour "closes".
-/// For each hour bucket, we keep the *last* price observed in that hour.
-pub fn resample_to_hourly(samples: &[Sample]) -> Vec<Sample> {
+/// Resample raw samples into fixed-size buckets (1h, 2h, 4h, ...),
+/// keeping the *last* price available in each bucket.
+/// - Bucket alignment is to Unix epoch (1970-01-01T00:00:00Z), so 4h buckets start at 00:00, 04:00, 08:00, ...
+/// - The output Sample.ts is the timestamp of the last observation in that bucket (not the bucket start).
+fn resample_to_close(samples: &[Sample], step: Duration) -> Vec<Sample> {
+    assert!(step > Duration::zero(), "step must be positive");
+    let step_secs = step.num_seconds();
+    assert!(step_secs > 0, "step is too small (must be >= 1 second)");
+
     let mut buckets: BTreeMap<DateTime<Utc>, Sample> = BTreeMap::new();
 
     for s in samples {
-        // Truncate to the start of the hour for the bucket key
-        let hour_start =
-            s.ts.with_minute(0)
-                .and_then(|dt| dt.with_second(0))
-                .and_then(|dt| dt.with_nanosecond(0))
-                .expect("valid hour truncation");
+        let t = s.ts.timestamp();
+        let bucket_start_secs = t.div_euclid(step_secs) * step_secs;
 
-        // Because we iterate in chronological order,
-        // inserting again for the same hour will overwrite with the *latest* sample.
-        buckets.insert(
-            hour_start,
-            Sample {
+        let bucket_start = Utc
+            .timestamp_opt(bucket_start_secs, 0)
+            .single()
+            .expect("valid bucket start");
+
+        buckets
+            .entry(bucket_start)
+            .and_modify(|prev| {
+                // Keep the latest observation within the bucket
+                if s.ts > prev.ts {
+                    *prev = Sample {
+                        ts: s.ts,
+                        price: s.price,
+                    };
+                }
+            })
+            .or_insert_with(|| Sample {
                 ts: s.ts,
                 price: s.price,
-            },
-        );
+            });
     }
 
     buckets.into_values().collect()
+}
+
+/// Convenience wrapper for 1h / 2h / 4h / ...
+pub fn resample_to_n_hours(samples: &[Sample], hours: i64) -> Vec<Sample> {
+    assert!(hours > 0, "hours must be >= 1");
+    resample_to_close(samples, Duration::hours(hours))
+}
+
+pub fn resample_to_hourly(samples: &[Sample]) -> Vec<Sample> {
+    resample_to_n_hours(samples, 1)
 }
 
 #[cfg(test)]
@@ -156,5 +179,22 @@ mod tests {
         // Hour 11: only one sample, kept as-is
         assert_eq!(out[1].ts, h11_start.ts);
         assert_eq!(out[1].price, 200.0);
+    }
+
+    #[test]
+    fn test_resample_to_n_hours() {
+        let s1 = sample(2025, 11, 28, 10, 05, 00, 100.0);
+        let s2 = sample(2025, 11, 28, 10, 30, 00, 101.0);
+        let s3 = sample(2025, 11, 28, 10, 59, 59, 103.0);
+        let s4 = sample(2025, 11, 28, 11, 59, 59, 104.0);
+        let s5 = sample(2025, 11, 28, 13, 59, 59, 102.0);
+        let s6 = sample(2025, 11, 28, 15, 59, 59, 102.0);
+
+        let samples = vec![s1, s2, s3, s4.clone(), s5, s6];
+        let out = resample_to_n_hours(&samples, 2);
+
+        assert_eq!(out.len(), 3);
+        assert_eq!(out[0].ts, s4.ts); // original timestamp of last tick in that hour
+        assert_eq!(out[0].price, 104.0); // close price
     }
 }

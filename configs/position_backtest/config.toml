@@ -1,4 +1,5 @@
 input           = "/home/thosio/Documents/crypto_logger/90d_1h_sample/solana_eur.csv"
+sample_hours    = 4
 
 initial_cash    = 10000
 buy_fraction    = 0.01
