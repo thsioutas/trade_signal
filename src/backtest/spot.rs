@@ -1,8 +1,10 @@
 use chrono::{DateTime, Utc};
 
 use crate::data::Sample;
-use crate::indicators::{AtrFilter, RegimeFilter, compute_smas};
+use crate::indicators::compute_smas;
 use crate::signal::{StrategyConfig, analyze};
+
+use super::common::{Signal, compute_max_drawdown, suggestion_to_signal};
 
 #[derive(Debug, Clone)]
 pub struct BacktestConfig {
@@ -16,10 +18,6 @@ pub struct BacktestConfig {
     pub buy_fraction: f64,
     /// Fraction of *current position* to sell on each SELL signal (0.0–1.0)
     pub sell_fraction: f64,
-    /// Whether ATR gate filter should be used
-    pub atr_enabled: bool,
-    /// Whether regime filter should be used
-    pub regime_enabled: bool,
     /// The strategy configuration
     pub strategy: StrategyConfig,
 }
@@ -37,7 +35,7 @@ pub struct Trade {
 }
 
 #[derive(Debug, Clone)]
-pub struct BacktestResult {
+pub struct SpotBacktestResult {
     pub config: BacktestConfig,
     pub initial_equity: f64,
     pub trades: Vec<Trade>,
@@ -48,27 +46,12 @@ pub struct BacktestResult {
     pub win_rate_pct: f64,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Signal {
-    Buy,
-    Sell,
-}
-
-fn suggestion_to_signal(s: &str) -> Option<Signal> {
-    match s {
-        "BUY" => Some(Signal::Buy),
-        "SELL" => Some(Signal::Sell),
-        _ => None,
-    }
-}
-
 /// Long-only backtest with:
 /// - fractional position sizing
 /// - optional initial coin holdings
-pub fn run_backtest(hourly: &[Sample], cfg: &BacktestConfig) -> Option<BacktestResult> {
-    if hourly.len() < 51 {
-        // Need at least 51 candles for SMA20/50 logic
-        return None;
+pub fn run_backtest(hourly: &[Sample], cfg: &BacktestConfig) -> Result<SpotBacktestResult, String> {
+    if hourly.len() < cfg.strategy.sma_config.long_window + 1 {
+        return Err("Not enough data".to_string());
     }
 
     // TODO: This doesn't have to be the first price available in my sample
@@ -97,21 +80,6 @@ pub fn run_backtest(hourly: &[Sample], cfg: &BacktestConfig) -> Option<BacktestR
     let buy_frac = cfg.buy_fraction.clamp(0.0, 1.0);
     let sell_frac = cfg.sell_fraction.clamp(0.0, 1.0);
 
-    let atr_filter = if cfg.atr_enabled {
-        let atr_prices = hourly.iter().map(|c| c.price).collect::<Vec<f64>>();
-        let atr_filter = AtrFilter::from_history(&atr_prices, 14, 0.4).unwrap();
-        println!("ATR floor to be used: {:.4}", atr_filter.floor());
-        Some(atr_filter)
-    } else {
-        None
-    };
-
-    let regime_filter = if cfg.regime_enabled {
-        Some(RegimeFilter::default())
-    } else {
-        None
-    };
-
     for (i, candle) in hourly.iter().enumerate() {
         let price = candle.price;
         prices.push(price);
@@ -129,14 +97,7 @@ pub fn run_backtest(hourly: &[Sample], cfg: &BacktestConfig) -> Option<BacktestR
             continue;
         };
 
-        let analysis = analyze(
-            &hourly[..=i],
-            &prices,
-            smas,
-            atr_filter,
-            regime_filter,
-            cfg.strategy,
-        );
+        let analysis = analyze(&hourly[..=i], &prices, smas, cfg.strategy);
         let signal = suggestion_to_signal(&analysis.suggestion);
 
         match signal {
@@ -252,7 +213,7 @@ pub fn run_backtest(hourly: &[Sample], cfg: &BacktestConfig) -> Option<BacktestR
     let max_drawdown_pct = compute_max_drawdown(&equity_curve);
     let win_rate_pct = compute_win_rate(&trades);
 
-    Some(BacktestResult {
+    Ok(SpotBacktestResult {
         config: cfg.clone(),
         initial_equity,
         trades,
@@ -262,29 +223,6 @@ pub fn run_backtest(hourly: &[Sample], cfg: &BacktestConfig) -> Option<BacktestR
         max_drawdown_pct,
         win_rate_pct,
     })
-}
-
-fn compute_max_drawdown(curve: &[(DateTime<Utc>, f64)]) -> f64 {
-    if curve.is_empty() {
-        return 0.0;
-    }
-
-    let mut peak = curve[0].1;
-    let mut max_dd = 0.0;
-
-    for &(_, equity) in curve {
-        if equity > peak {
-            peak = equity;
-        }
-        if peak > 0.0 {
-            let dd = (peak - equity) / peak;
-            if dd > max_dd {
-                max_dd = dd;
-            }
-        }
-    }
-
-    max_dd
 }
 
 fn compute_win_rate(trades: &[Trade]) -> f64 {
@@ -312,7 +250,7 @@ pub fn buy_and_hold_equity(hourly: &[Sample], initial_cash: f64, initial_coin: f
 }
 
 /// Simple CLI-style summary you can reuse in a binary.
-pub fn print_summary(result: &BacktestResult) {
+pub fn print_summary(result: &SpotBacktestResult) {
     println!("=== Backtest Summary ===");
     println!("Initial equity:  {:.2}", result.initial_equity);
     println!("Final equity:     {:.2}", result.final_equity);

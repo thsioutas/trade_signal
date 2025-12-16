@@ -1,85 +1,93 @@
+use std::path::PathBuf;
+
 use anyhow::{Context, Result};
 use clap::Parser;
-use std::path::PathBuf;
-use trade_signal::indicators::sma::SmaConfig;
-use trade_signal::signal::{BreakoutConfig, PullbackConfig, StrategyConfig};
+use serde::Deserialize;
 
-use trade_signal::backtest::{BacktestConfig, buy_and_hold_equity, print_summary, run_backtest};
+use trade_signal::backtest::spot::{
+    BacktestConfig, buy_and_hold_equity, print_summary, run_backtest,
+};
 use trade_signal::data::{get_samples_from_input_file, resample_to_hourly};
+use trade_signal::indicators::sma::SmaConfig;
+use trade_signal::indicators::{AtrFilter, RegimeFilter};
+use trade_signal::signal::{BreakoutConfig, FilterConfig, PullbackConfig, StrategyConfig};
 
 #[derive(Debug, Parser)]
 struct Args {
-    /// Path to the CSV file (timestamp,price)pub
+    /// config-file path
     #[arg(long)]
+    config: PathBuf,
+}
+
+#[derive(Deserialize)]
+pub struct Config {
+    /// Path to the CSV file (timestamp,price)pub
     input: PathBuf,
 
     /// Initial cash for the backtest
-    #[arg(long, default_value_t = 10_000.0)]
     initial_cash: f64,
 
     /// Coins you already hold at the first candle
-    #[arg(long, default_value_t = 0.0)]
     initial_coin: f64,
 
     /// Fee in basis points per trade side (e.g. 10 = 0.10%)
-    #[arg(long, default_value_t = 10.0)]
     fee_bps: f64,
 
     /// Fraction of *available cash* to allocate on each BUY signal (0.0–1.0)
-    #[arg(long, default_value_t = 0.01)]
     buy_fraction: f64,
 
     /// Fraction of *current position* to sell on each SELL signal (0.0–1.0)
-    #[arg(long, default_value_t = 0.01)]
     sell_fraction: f64,
 
     /// Whether ATR gate filter should be used
-    #[arg(long, default_value_t = false)]
     atr_enabled: bool,
 
     /// Whether regime filter should be used
-    #[arg(long, default_value_t = false)]
     regime_enabled: bool,
 
     /// How many candles to lookback for a brekdown
     /// Do not set to not use breakout patterns
-    #[arg(long)]
     breakout_lookback: Option<usize>,
 
     /// Do not set to not use pullback patterns
-    #[arg(long)]
     pullback_bounce_tolerance_pct: Option<f64>,
 
     /// Do not set to not use pullback patterns
-    #[arg(long)]
     pullback_rejection_tolerance_pct: Option<f64>,
 
-    /// Whether pullback signals should be used
-    #[arg(long, default_value_t = false)]
-    enable_pullbacks: bool,
-
     /// Whether sma crossover signals should be used
-    #[arg(long, default_value_t = false)]
     enable_crossovers: bool,
 
     /// Whether bias_only signals should be used
-    #[arg(long, default_value_t = false)]
     enable_bias_only: bool,
 
     /// SMA short window
-    #[arg(long, default_value_t = 20)]
     sma_short_window: usize,
 
     /// SMA long window
-    #[arg(long, default_value_t = 50)]
     sma_long_window: usize,
+
+    /// Whether price confirmation is required
+    require_price_confirmation: bool,
+
+    /// Whether trend filter is required
+    require_trend_filter: bool,
 }
 
 fn main() -> Result<()> {
     let args = Args::parse();
+    let config_path = args
+        .config
+        .into_os_string()
+        .into_string()
+        .expect("Failed to translate config file path into string");
+    let config: Config = config::Config::builder()
+        .add_source(config::File::with_name(&config_path))
+        .build()?
+        .try_deserialize()?;
 
-    let samples = get_samples_from_input_file(&args.input)
-        .with_context(|| format!("failed to load samples from {:?}", args.input))?;
+    let samples = get_samples_from_input_file(&config.input)
+        .with_context(|| format!("failed to load samples from {:?}", config.input))?;
 
     if samples.is_empty() {
         println!("No data found in CSV.");
@@ -95,8 +103,8 @@ fn main() -> Result<()> {
     );
 
     let pullbacks = match (
-        args.pullback_bounce_tolerance_pct,
-        args.pullback_rejection_tolerance_pct,
+        config.pullback_bounce_tolerance_pct,
+        config.pullback_rejection_tolerance_pct,
     ) {
         (Some(bounce_tolerance_pct), Some(reject_tolerance_pct)) => Some(PullbackConfig {
             bounce_tolerance_pct,
@@ -120,26 +128,38 @@ fn main() -> Result<()> {
     };
 
     let strategy = StrategyConfig {
-        breakouts: args.breakout_lookback.map(|v| BreakoutConfig {
+        breakouts: config.breakout_lookback.map(|v| BreakoutConfig {
             breakout_lookback: v,
         }),
         pullbacks,
-        enable_crossovers: args.enable_crossovers,
-        enable_bias_only: args.enable_bias_only,
+        enable_crossovers: config.enable_crossovers,
+        enable_bias_only: config.enable_bias_only,
         sma_config: SmaConfig {
-            short_window: args.sma_short_window,
-            long_window: args.sma_long_window,
+            short_window: config.sma_short_window,
+            long_window: config.sma_long_window,
+        },
+        filters: FilterConfig {
+            require_price_confirmation: config.require_price_confirmation,
+            require_trend_filter: config.require_trend_filter,
+            atr: if config.atr_enabled {
+                Some(AtrFilter::backtest())
+            } else {
+                None
+            },
+            regime: if config.regime_enabled {
+                Some(RegimeFilter::backtest())
+            } else {
+                None
+            },
         },
     };
 
     let cfg = BacktestConfig {
-        initial_cash: args.initial_cash,
-        initial_coin: args.initial_coin,
-        fee_bps: args.fee_bps,
-        buy_fraction: args.buy_fraction,
-        sell_fraction: args.sell_fraction,
-        atr_enabled: args.atr_enabled,
-        regime_enabled: args.regime_enabled,
+        initial_cash: config.initial_cash,
+        initial_coin: config.initial_coin,
+        fee_bps: config.fee_bps,
+        buy_fraction: config.buy_fraction,
+        sell_fraction: config.sell_fraction,
         strategy,
     };
 
@@ -149,17 +169,11 @@ fn main() -> Result<()> {
     println!("Fee bps:           {}", cfg.fee_bps);
     println!("Buy fraction:      {}", cfg.buy_fraction);
     println!("Sell fraction:     {}", cfg.sell_fraction);
-    println!("ATR enabled:       {}", cfg.atr_enabled);
-    println!("Regime enabled:    {}", cfg.regime_enabled);
+    println!("ATR enabled:       {}", config.atr_enabled);
+    println!("Regime enabled:    {}", config.regime_enabled);
     println!("Strategy:          {}", strategy.describe_config());
 
-    let Some(result) = run_backtest(&hourly, &cfg) else {
-        println!(
-            "Not enough hourly data: need at least 51 candles, got {}.",
-            hourly.len()
-        );
-        return Ok(());
-    };
+    let result = run_backtest(&hourly, &cfg).unwrap();
 
     print_summary(&result);
     if let Some(hold_equity) = buy_and_hold_equity(&hourly, cfg.initial_cash, cfg.initial_coin) {

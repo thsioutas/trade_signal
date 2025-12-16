@@ -2,7 +2,7 @@ use anyhow::Result;
 use clap::Parser;
 use trade_signal::{
     indicators::sma::SmaConfig,
-    signal::{BreakoutConfig, PullbackConfig, StrategyConfig},
+    signal::{BreakoutConfig, FilterConfig, PullbackConfig, StrategyConfig},
 };
 
 use std::path::PathBuf;
@@ -50,9 +50,6 @@ fn main() -> Result<()> {
         return Ok(());
     };
 
-    let atr_filter = None;
-    let regime_filter = None;
-
     let strategy = StrategyConfig {
         breakouts: Some(BreakoutConfig {
             breakout_lookback: BREAKDOWN_LOOKBACK,
@@ -64,11 +61,16 @@ fn main() -> Result<()> {
             reject_tolerance_pct: PULLBACK_TOLERANCE_PCT,
         }),
         sma_config,
+        filters: FilterConfig {
+            atr: None,
+            regime: None,
+            require_price_confirmation: true,
+            require_trend_filter: true,
+        },
     };
 
     // Perform final analysis
-    let result =
-        trade_signal::signal::analyze(&hourly, &prices, smas, atr_filter, regime_filter, strategy);
+    let result = trade_signal::signal::analyze(&hourly, &prices, smas, strategy);
 
     // Print result.clone()
     trade_signal::output::print_analysis(&result, sma_config);

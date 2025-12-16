@@ -3,76 +3,78 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
+use anyhow::Result;
 use clap::Parser;
 use rayon::prelude::*;
+use serde::Deserialize;
 
 use trade_signal::{
-    backtest::{BacktestConfig, BacktestResult, buy_and_hold_equity, print_summary, run_backtest},
+    backtest::spot::{
+        BacktestConfig, SpotBacktestResult, buy_and_hold_equity, print_summary, run_backtest,
+    },
     data::{get_samples_from_input_file, resample_to_hourly},
     indicators::sma::SmaConfig,
-    signal::{BreakoutConfig, PullbackConfig, StrategyConfig},
+    signal::{BreakoutConfig, FilterConfig, PullbackConfig, StrategyConfig},
 };
 
 const EPS: f64 = 1e-9;
 
-/// Sweep over backtest parameters (i.e. lookback, buy/sell fractions)
-/// and report the best configuration.
 #[derive(Debug, Parser)]
 struct Args {
-    /// Path to CSV with raw timestamp,price data
+    /// config-file path
     #[arg(long)]
+    config: PathBuf,
+}
+
+/// Sweep over backtest parameters (i.e. lookback, buy/sell fractions)
+/// and report the best configuration.
+#[derive(Deserialize)]
+struct Config {
+    /// Path to CSV with raw timestamp,price data
     input: PathBuf,
 
     /// Initial cash for the backtest
-    #[arg(long, default_value_t = 1000.0)]
     initial_cash: f64,
 
     /// Initial coin holdings (e.g. if you already own some SOL)
-    #[arg(long, default_value_t = 0.0)]
     initial_coin: f64,
 
     /// Min breakout lookback window (e.g. 3)
-    #[arg(long, default_value_t = 3)]
     min_lookback: usize,
 
     /// Max breakout lookback window (e.g. 10)
-    #[arg(long, default_value_t = 10)]
     max_lookback: usize,
 
     /// Min pullback tolerances (e.g. 0.001)
-    #[arg(long, default_value_t = 0.001)]
     min_pullback_pct: f64,
 
     /// Max pullback tolerances (e.g. 0.01)
-    #[arg(long, default_value_t = 0.01)]
     max_pullback_pct: f64,
 
     /// Maximum fraction for buy/sell (e.g. 0.5 = at most 50%)
-    #[arg(long, default_value_t = 0.5)]
     max_fraction: f64,
 
     /// Number of steps for buy/sell fraction (0–1).
     /// E.g. 100 => 0.01, 0.02, ..., 1.00
-    #[arg(long, default_value_t = 100)]
     frac_steps: usize,
 
     /// Trading fee in basis points (e.g. 10 = 0.10%)
-    #[arg(long, default_value_t = 10.0)]
     fee_bps: f64,
-
-    /// Whether ATR gate filter should be used
-    #[arg(long, default_value_t = false)]
-    atr_enabled: bool,
-
-    /// Whether regime filter should be used
-    #[arg(long, default_value_t = false)]
-    regime_enabled: bool,
 }
 
-fn main() {
+fn main() -> Result<()> {
     let args = Args::parse();
+    let config_path = args
+        .config
+        .into_os_string()
+        .into_string()
+        .expect("Failed to translate config file path into string");
+    let config: Config = config::Config::builder()
+        .add_source(config::File::with_name(&config_path))
+        .build()?
+        .try_deserialize()?;
 
-    let samples = get_samples_from_input_file(&args.input).expect("failed to load input CSV");
+    let samples = get_samples_from_input_file(&config.input).expect("failed to load input CSV");
     let hourly = resample_to_hourly(&samples);
 
     println!(
@@ -81,17 +83,12 @@ fn main() {
         hourly.len()
     );
 
-    if hourly.len() < 51 {
-        eprintln!("Not enough data for SMA20/50 logic (need >= 51 candles).");
-        return;
-    }
-
     let pullback_pairs =
-        generate_pullback_pairs(args.min_pullback_pct, args.max_pullback_pct, 0.001);
+        generate_pullback_pairs(config.min_pullback_pct, config.max_pullback_pct, 0.001);
 
-    let strategies = generate_strategies(args.min_lookback, args.max_lookback, pullback_pairs);
+    let strategies = generate_strategies(config.min_lookback, config.max_lookback, pullback_pairs);
 
-    let steps = args.frac_steps; // e.g. 50 => 0.01 .. 0.50
+    let steps = config.frac_steps;
 
     let jobs: Vec<_> = strategies
         .iter()
@@ -108,9 +105,9 @@ fn main() {
     );
 
     let mut best_cfg: Option<BacktestConfig> = None;
-    let mut best_result: Option<BacktestResult> = None;
+    let mut best_result: Option<SpotBacktestResult> = None;
 
-    let best_pair: Option<(BacktestConfig, BacktestResult)> = jobs
+    let best_pair: Option<(BacktestConfig, SpotBacktestResult)> = jobs
         .into_par_iter()
         .filter_map(|(strategy, step)| {
             let current = done.fetch_add(1, Ordering::Relaxed) + 1;
@@ -120,18 +117,18 @@ fn main() {
                 let pct = (current as f64 / total_iters as f64) * 100.0;
                 println!("Progress: {:6.2}% ({}/{})", pct, current, total_iters);
             }
-            let frac = (step as f64 / steps as f64) * args.max_fraction;
+            let frac = (step as f64 / steps as f64) * config.max_fraction;
             let cfg = BacktestConfig {
-                initial_cash: args.initial_cash,
-                initial_coin: args.initial_coin,
-                fee_bps: args.fee_bps,
+                initial_cash: config.initial_cash,
+                initial_coin: config.initial_coin,
+                fee_bps: config.fee_bps,
                 buy_fraction: frac,
                 sell_fraction: frac,
-                atr_enabled: args.atr_enabled,
-                regime_enabled: args.regime_enabled,
                 strategy,
             };
-            let result = run_backtest(&hourly, &cfg)?;
+            let result = run_backtest(&hourly, &cfg)
+                .inspect_err(|err| println!("Failed to get backtest result: {}", err))
+                .ok()?;
             Some((cfg, result))
         })
         .reduce_with(|(cfg_a, res_a), (cfg_b, res_b)| {
@@ -168,7 +165,7 @@ fn main() {
         println!("buy_fraction:      {:.2}", cfg.buy_fraction);
         println!("sell_fraction:     {:.2}", cfg.sell_fraction);
         println!("fee_bps:           {:.2}", cfg.fee_bps);
-        println!("ATR enabled:       {}", cfg.atr_enabled);
+        println!("ATR enabled:       {}", cfg.strategy.filters.atr.is_some());
         println!();
         print_summary(&result);
 
@@ -180,6 +177,7 @@ fn main() {
     } else {
         println!("No valid backtest result produced.");
     }
+    Ok(())
 }
 
 fn generate_strategies(
@@ -234,6 +232,12 @@ fn generate_strategies(
                                 enable_crossovers,
                                 enable_bias_only,
                                 sma_config,
+                                filters: FilterConfig {
+                                    atr: None,
+                                    regime: None,
+                                    require_price_confirmation: true,
+                                    require_trend_filter: true,
+                                },
                             };
 
                             strategies.push(strategy);
@@ -250,6 +254,12 @@ fn generate_strategies(
                             enable_crossovers,
                             enable_bias_only,
                             sma_config,
+                            filters: FilterConfig {
+                                atr: None,
+                                regime: None,
+                                require_price_confirmation: true,
+                                require_trend_filter: true,
+                            },
                         };
 
                         strategies.push(strategy);
@@ -266,6 +276,12 @@ fn generate_strategies(
                             enable_crossovers,
                             enable_bias_only,
                             sma_config,
+                            filters: FilterConfig {
+                                atr: None,
+                                regime: None,
+                                require_price_confirmation: true,
+                                require_trend_filter: true,
+                            },
                         };
 
                         strategies.push(strategy);
@@ -286,6 +302,12 @@ fn generate_strategies(
                         enable_crossovers,
                         enable_bias_only,
                         sma_config,
+                        filters: FilterConfig {
+                            atr: None,
+                            regime: None,
+                            require_price_confirmation: true,
+                            require_trend_filter: true,
+                        },
                     };
 
                     strategies.push(strategy);
