@@ -196,7 +196,7 @@ fn suggest_action(prices: &[f64], smas: Smas, strategy: StrategyConfig) -> (Stri
         && allow_down
         && regime_allows_down_singals
         && is_breakdown_below_recent_low(prices, breakout_lookback)
-        && price_below_both
+        && confirm_down
     {
         return (
             "SELL".into(),
