@@ -1,17 +1,14 @@
 use std::path::PathBuf;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::Parser;
 use serde::Deserialize;
-
-use trade_signal::{
-    backtest::{
-        find_best_strategy, generate_backtest_sweep_jobs, generate_pullback_pairs,
-        generate_strategies,
-        spot::{SpotBacktester, buy_and_hold_equity, print_summary},
-    },
-    data::{get_samples_from_input_file, resample_to_hourly},
+use trade_signal::backtest::{
+    find_best_strategy, generate_backtest_sweep_jobs, generate_pullback_pairs, generate_strategies,
 };
+
+use trade_signal::backtest::position::{PositionBacktester, buy_and_hold_equity, print_summary};
+use trade_signal::data::{get_samples_from_input_file, resample_to_n_hours};
 
 #[derive(Debug, Parser)]
 struct Args {
@@ -20,18 +17,16 @@ struct Args {
     config: PathBuf,
 }
 
-/// Sweep over backtest parameters (i.e. lookback, buy/sell fractions)
-/// and report the best configuration.
 #[derive(Deserialize)]
 struct Config {
-    /// Path to CSV with raw timestamp,price data
+    /// Path to the CSV file (timestamp,price)pub
     input: PathBuf,
+
+    /// Resample input to <sample_hours> hours (i.e. 1h, 4h, 6h, ...)
+    sample_hours: i64,
 
     /// Initial cash for the backtest
     initial_cash: f64,
-
-    /// Initial coin holdings (e.g. if you already own some SOL)
-    initial_coin: f64,
 
     /// Min breakout lookback window (e.g. 3)
     min_lookback: usize,
@@ -51,9 +46,6 @@ struct Config {
     /// Number of steps for buy/sell fraction (0–1).
     /// E.g. 100 => 0.01, 0.02, ..., 1.00
     buy_sell_frac_steps: usize,
-
-    /// Trading fee in basis points (e.g. 10 = 0.10%)
-    fee_bps: f64,
 }
 
 fn main() -> Result<()> {
@@ -68,13 +60,21 @@ fn main() -> Result<()> {
         .build()?
         .try_deserialize()?;
 
-    let samples = get_samples_from_input_file(&config.input).expect("failed to load input CSV");
-    let hourly = resample_to_hourly(&samples);
+    let samples = get_samples_from_input_file(&config.input)
+        .with_context(|| format!("failed to load samples from {:?}", config.input))?;
+
+    if samples.is_empty() {
+        println!("No data found in CSV.");
+        return Ok(());
+    }
+
+    let resampled = resample_to_n_hours(&samples, config.sample_hours);
 
     println!(
-        "Loaded {} raw samples -> {} hourly candles",
+        "Loaded {} raw points, {} {}h-candles after resampling.",
         samples.len(),
-        hourly.len()
+        resampled.len(),
+        config.sample_hours,
     );
 
     let pullback_pairs =
@@ -86,13 +86,13 @@ fn main() -> Result<()> {
 
     let jobs = generate_backtest_sweep_jobs(strategies, buy_sell_frac_steps);
 
-    let backtester = SpotBacktester::new(config.initial_cash, config.initial_coin, config.fee_bps);
+    let backtester = PositionBacktester::new(config.initial_cash);
 
     let best = find_best_strategy(
         jobs,
         config.max_buy_sell_fraction,
         buy_sell_frac_steps,
-        &hourly,
+        &samples,
         backtester,
     );
 
@@ -104,21 +104,16 @@ fn main() -> Result<()> {
             result.config.strategy.describe_config()
         );
         println!("buy_fraction:      {:.2}", result.config.buy_fraction);
-        println!("sell_fraction:     {:.2}", result.config.sell_fraction);
-        println!("fee_bps:           {:.2}", result.config.fee_bps);
         println!();
         print_summary(&result);
 
-        if let Some(hold_equity) = buy_and_hold_equity(
-            &hourly,
-            result.config.initial_cash,
-            result.config.initial_coin,
-        ) {
+        if let Some(hold_equity) = buy_and_hold_equity(&samples, result.config.initial_cash) {
             println!();
             println!("Buy & hold final equity: {:.2}", hold_equity);
         }
     } else {
         println!("No valid backtest result produced.");
     }
+
     Ok(())
 }

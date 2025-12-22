@@ -120,10 +120,238 @@ pub fn analyze(
     }
 }
 
+struct AnalysisCtx {
+    pub smas: Smas,
+    pub gate_long: Option<String>,
+    pub gate_short: Option<String>,
+}
+
+impl AnalysisCtx {
+    pub fn new(prices: &[f64], smas: Smas, strategy: &StrategyConfig) -> Self {
+        let last_price = *prices.last().expect("prices non-empty");
+
+        let uptrend = smas.sma_short > smas.sma_long && smas.sma_long >= smas.prev_sma_long;
+        let downtrend = smas.sma_short < smas.sma_long && smas.sma_long <= smas.prev_sma_long;
+
+        let price_above_both = last_price > smas.sma_short && last_price > smas.sma_long;
+        let price_below_both = last_price < smas.sma_short && last_price < smas.sma_long;
+
+        let (regime_up, regime_down) = strategy
+            .filters
+            .regime
+            .map(|rf| {
+                let r = rf.detect_regime(prices);
+                (
+                    matches!(r, Regime::TrendingUp),
+                    matches!(r, Regime::TrendingDown),
+                )
+            })
+            .unwrap_or((true, true));
+
+        let gate_long = if strategy.filters.require_trend_filter && !uptrend {
+            Some("Trend filter vetoed long (not uptrend)".into())
+        } else if strategy.filters.require_price_confirmation && !price_above_both {
+            Some("Price confirmation vetoed long (not above both MAs)".into())
+        } else if !regime_up {
+            Some("Regime filter vetoed long".into())
+        } else {
+            None
+        };
+
+        let gate_short = if strategy.filters.require_trend_filter && !downtrend {
+            Some("Trend filter vetoed short (not downtrend)".into())
+        } else if strategy.filters.require_price_confirmation && !price_below_both {
+            Some("Price confirmation vetoed short (not below both MAs)".into())
+        } else if !regime_down {
+            Some("Regime filter vetoed short".into())
+        } else {
+            None
+        };
+
+        Self {
+            smas,
+            gate_long,
+            gate_short,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Action {
+    Buy,
+    Sell,
+    Hold,
+}
+
+impl std::fmt::Display for Action {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let out = format!("{:?}", self).to_uppercase();
+        write!(f, "{}", out)
+    }
+}
+
+#[derive(Debug, Clone)]
+struct Decision {
+    action: Action,
+    reason: String,
+    rule: String,
+}
+
+#[derive(Debug, Clone)]
+enum RuleOutcome {
+    NoMatch,
+    Blocked { reason: String },
+    Fired(Decision),
+}
+
+fn rule_crossovers(ctx: &AnalysisCtx) -> RuleOutcome {
+    let golden =
+        ctx.smas.prev_sma_short <= ctx.smas.prev_sma_long && ctx.smas.sma_short > ctx.smas.sma_long;
+    let death =
+        ctx.smas.prev_sma_short >= ctx.smas.prev_sma_long && ctx.smas.sma_short < ctx.smas.sma_long;
+
+    if golden {
+        if let Some(r) = &ctx.gate_long {
+            return RuleOutcome::Blocked {
+                reason: format!("Golden Cross, but {r}"),
+            };
+        }
+        return RuleOutcome::Fired(Decision {
+            action: Action::Buy,
+            rule: "Crossovers".into(),
+            reason: "Golden Cross".into(),
+        });
+    }
+
+    if death {
+        if let Some(r) = &ctx.gate_short {
+            return RuleOutcome::Blocked {
+                reason: format!("Death Cross, but {r}"),
+            };
+        }
+        return RuleOutcome::Fired(Decision {
+            action: Action::Sell,
+            rule: "Crossovers".into(),
+            reason: "Death Cross".into(),
+        });
+    }
+
+    RuleOutcome::NoMatch
+}
+
+fn rule_breakouts(ctx: &AnalysisCtx, prices: &[f64], config: BreakoutConfig) -> RuleOutcome {
+    let rule = "Breakouts";
+    if is_breakout_above_recent_high(prices, config.breakout_lookback) {
+        let reason = "Breakout above recent high";
+        if let Some(r) = &ctx.gate_long {
+            return RuleOutcome::Blocked {
+                reason: format!("{}, but {r}", reason),
+            };
+        }
+        return RuleOutcome::Fired(Decision {
+            action: Action::Buy,
+            rule: rule.into(),
+            reason: reason.into(),
+        });
+    }
+
+    if is_breakdown_below_recent_low(prices, config.breakout_lookback) {
+        let reason = "Breakdown below recent low";
+        if let Some(r) = &ctx.gate_short {
+            return RuleOutcome::Blocked {
+                reason: format!("{}, but {r}", reason),
+            };
+        }
+        return RuleOutcome::Fired(Decision {
+            action: Action::Sell,
+            rule: rule.into(),
+            reason: reason.into(),
+        });
+    }
+
+    RuleOutcome::NoMatch
+}
+
+fn rule_pullbacks(
+    ctx: &AnalysisCtx,
+    prices: &[f64],
+    pullback_config: PullbackConfig,
+) -> RuleOutcome {
+    let rule = "Pullbacks";
+    if is_pullback_to_sma_short_and_bounce(
+        prices,
+        ctx.smas.sma_short,
+        pullback_config.bounce_tolerance_pct,
+    ) {
+        let reason = "Pullback to SMA short and bounce";
+        if let Some(r) = &ctx.gate_long {
+            return RuleOutcome::Blocked {
+                reason: format!("{}, but {r}", reason),
+            };
+        }
+        return RuleOutcome::Fired(Decision {
+            action: Action::Buy,
+            rule: rule.into(),
+            reason: reason.into(),
+        });
+    }
+
+    if is_pullback_to_sma_short_and_reject_down(
+        prices,
+        ctx.smas.sma_short,
+        pullback_config.reject_tolerance_pct,
+    ) {
+        let reason = "Pullback up to SMA short and rejection";
+        if let Some(r) = &ctx.gate_short {
+            return RuleOutcome::Blocked {
+                reason: format!("{}, but {r}", reason),
+            };
+        }
+        return RuleOutcome::Fired(Decision {
+            action: Action::Sell,
+            rule: rule.into(),
+            reason: reason.into(),
+        });
+    }
+
+    RuleOutcome::NoMatch
+}
+
+fn rule_bias_only(ctx: &AnalysisCtx) -> RuleOutcome {
+    let rule = "Bias only";
+    if ctx.smas.sma_short > ctx.smas.sma_long {
+        let reason = "Uptrend (SMA short > SMA long)";
+        if let Some(r) = &ctx.gate_long {
+            return RuleOutcome::Blocked {
+                reason: format!("{}, but {r}", reason),
+            };
+        }
+        return RuleOutcome::Fired(Decision {
+            action: Action::Buy,
+            rule: rule.into(),
+            reason: reason.into(),
+        });
+    }
+
+    if ctx.smas.sma_short < ctx.smas.sma_long {
+        let reason = "Downtrend (SMA short < SMA long)";
+        if let Some(r) = &ctx.gate_short {
+            return RuleOutcome::Blocked {
+                reason: format!("{}, but {r}", reason),
+            };
+        }
+        return RuleOutcome::Fired(Decision {
+            action: Action::Sell,
+            rule: rule.into(),
+            reason: reason.into(),
+        });
+    }
+
+    RuleOutcome::NoMatch
+}
+
 fn suggest_action(prices: &[f64], smas: Smas, strategy: StrategyConfig) -> (String, String) {
     // TODO: Consider mocking breakout, atr and regime indicators. Their functionality is already tested by other UTs
-
-    let last_price = *prices.last().expect("prices is non-empty");
 
     // ~~~~ Volatility filter (ATR) ~~~~
     if let Some(atr_filter) = strategy.filters.atr {
@@ -155,177 +383,48 @@ fn suggest_action(prices: &[f64], smas: Smas, strategy: StrategyConfig) -> (Stri
         }
     }
 
-    // ~~~~ Regime detection ~~~~
-    let (regime_allows_up_signals, regime_allows_down_singals) = strategy
-        .filters
-        .regime
-        .map(|rf| {
-            let regime = rf.detect_regime(prices);
-            (
-                matches!(regime, Regime::TrendingUp),
-                matches!(regime, Regime::TrendingDown),
-            )
-        })
-        .unwrap_or((true, true));
+    let analysis_ctx = AnalysisCtx::new(prices, smas, &strategy);
 
-    // Trend and slope filters
-    // We combined two separate signals:
-    // * Trend direction (SMA(short) > SMA(long) or SMA(short) < SMA(long))
-    // * Trend slope (SMA(long) rising or falling)
-    // We did this because:
-    // * Using only SMA(long) slope is not enough to define a strong trend.
-    // * Using only SMA(short) > SMA(long) is not safe without confirming SMA(long) is rising.
-    // * Combining them is a stronger, more reliable trend filter.
-    let uptrend = smas.sma_short > smas.sma_long && smas.sma_long >= smas.prev_sma_long;
-    let downtrend = smas.sma_short < smas.sma_long && smas.sma_long <= smas.prev_sma_long;
+    let mut fired_but_blocked = Vec::new();
 
-    // Price confirmation: where is price relative to the MAs?
-    let price_above_both = last_price > smas.sma_short && last_price > smas.sma_long;
-    let price_below_both = last_price < smas.sma_short && last_price < smas.sma_long;
-
-    let allow_up = !strategy.filters.require_trend_filter || uptrend;
-    let allow_down = !strategy.filters.require_trend_filter || downtrend;
-
-    let confirm_up = !strategy.filters.require_price_confirmation || price_above_both;
-    let confirm_down = !strategy.filters.require_price_confirmation || price_below_both;
-
-    // ~~~~ SELL patterns ~~~~
-
-    // 1. Breakdown below a recent low in a downtrend
-    if let Some(breakout_lookback) = strategy.breakouts.map(|s| s.breakout_lookback)
-        && allow_down
-        && regime_allows_down_singals
-        && is_breakdown_below_recent_low(prices, breakout_lookback)
-        && confirm_down
-    {
-        return (
-            "SELL".into(),
-            format!(
-                "Breakdown below recent low in downtrend (SMA{} < SMA{})",
-                strategy.sma_config.short_window, strategy.sma_config.long_window
-            ),
-        );
+    // TODO: Move the strategies to different files and create necessary Strategy Trait
+    if let Some(breakouts) = strategy.breakouts {
+        match rule_breakouts(&analysis_ctx, prices, breakouts) {
+            RuleOutcome::Fired(d) => return (d.action.to_string(), d.reason),
+            RuleOutcome::Blocked { reason } => fired_but_blocked.push(reason),
+            _ => {}
+        }
     }
 
-    // 2. Pullback up to SMA(short) + rejection in a downtrend
-    if let Some(rejection_pct) = strategy.pullbacks.map(|p| p.reject_tolerance_pct)
-        && allow_down
-        && regime_allows_down_singals
-        && is_pullback_to_sma_short_and_reject_down(prices, smas.sma_short, rejection_pct)
-    {
-        return (
-            "SELL".into(),
-            format!(
-                "Pullback up to SMA{} and rejection in downtrend",
-                strategy.sma_config.short_window
-            ),
-        );
+    if let Some(lookback) = strategy.pullbacks {
+        match rule_pullbacks(&analysis_ctx, prices, lookback) {
+            RuleOutcome::Fired(d) => return (d.action.to_string(), d.reason),
+            RuleOutcome::Blocked { reason } => fired_but_blocked.push(reason),
+            _ => {}
+        }
     }
 
-    // ~~~~ BUY patterns ~~~~
-
-    // 3. Breakout above a recent high in an uptrend
-    if let Some(breakout_lookback) = strategy.breakouts.map(|s| s.breakout_lookback)
-        && allow_up
-        && regime_allows_up_signals
-        && is_breakout_above_recent_high(prices, breakout_lookback)
-        && confirm_up
-    {
-        return (
-            "BUY".into(),
-            format!(
-                "Breakout above recent high in uptrend (SMA{} > SMA{})",
-                strategy.sma_config.short_window, strategy.sma_config.long_window
-            ),
-        );
+    if strategy.enable_crossovers {
+        match rule_crossovers(&analysis_ctx) {
+            RuleOutcome::Fired(d) => return (d.action.to_string(), d.reason),
+            RuleOutcome::Blocked { reason } => fired_but_blocked.push(reason),
+            _ => {}
+        }
     }
-
-    // 4. Pullback to SMA(short) + bounce in an uptrend
-    if let Some(bounce_pct) = strategy.pullbacks.map(|p| p.bounce_tolerance_pct)
-        && allow_up
-        && regime_allows_up_signals
-        && is_pullback_to_sma_short_and_bounce(prices, smas.sma_short, bounce_pct)
-    {
-        return (
-            "BUY".into(),
-            format!(
-                "Pullback to SMA{} and bounce in uptrend",
-                strategy.sma_config.short_window
-            ),
-        );
-    }
-
-    // ~~~~ Crossovers ~~~~
-
-    // 5. Strong BUY: fresh Golden Cross in an uptrend with price confirmation
-    let golden_cross = smas.prev_sma_short <= smas.prev_sma_long && smas.sma_short > smas.sma_long;
-    if strategy.enable_crossovers
-        && golden_cross
-        && allow_up
-        && regime_allows_up_signals
-        && confirm_up
-    {
-        return (
-            "BUY".into(),
-            format!(
-                "Golden Cross + SMA{} rising + price above SMA{} & SMA{}",
-                strategy.sma_config.long_window,
-                strategy.sma_config.short_window,
-                strategy.sma_config.long_window
-            ),
-        );
-    }
-
-    // 6. Strong SELL: fresh Death Cross in a downtrend with price confirmation
-    let death_cross = smas.prev_sma_short >= smas.prev_sma_long && smas.sma_short < smas.sma_long;
-    if strategy.enable_crossovers
-        && death_cross
-        && allow_down
-        && regime_allows_down_singals
-        && confirm_down
-    {
-        return (
-            "SELL".into(),
-            format!(
-                "Death Cross + SMA{} falling + price below SMA{} & SMA{}",
-                strategy.sma_config.long_window,
-                strategy.sma_config.short_window,
-                strategy.sma_config.long_window
-            ),
-        );
-    }
-
-    // ~~~~ Bias-only ~~~~
 
     if strategy.enable_bias_only {
-        // 7. No fresh cross but we are clearly in an uptrend
-        if smas.sma_short > smas.sma_long && regime_allows_up_signals && confirm_up {
-            return (
-                "HOLD / LONG BIAS".into(),
-                format!(
-                    "Uptrend (SMA{} > SMA{}) and price above both averages",
-                    strategy.sma_config.short_window, strategy.sma_config.long_window
-                ),
-            );
-        }
-
-        // 8. No fresh cross but we are clearly in a downtrend
-        if smas.sma_short < smas.sma_long && regime_allows_down_singals && confirm_down {
-            return (
-                "HOLD / SHORT BIAS".into(),
-                format!(
-                    "Downtrend (SMA{} < SMA{}) and price below both averages",
-                    strategy.sma_config.short_window, strategy.sma_config.long_window
-                ),
-            );
+        match rule_bias_only(&analysis_ctx) {
+            RuleOutcome::Fired(d) => return (d.action.to_string(), d.reason),
+            RuleOutcome::Blocked { reason } => fired_but_blocked.push(reason),
+            _ => {}
         }
     }
 
-    // 5. Otherwise, no clear edge
-    (
-        "HOLD".into(),
-        "No clear breakout, pullback bounce/rejection, or crossover signal".into(),
-    )
+    if !fired_but_blocked.is_empty() {
+        return ("HOLD".into(), fired_but_blocked.join(" & "));
+    }
+
+    ("HOLD".into(), "No strategy matched".into())
 }
 
 #[cfg(test)]
@@ -440,10 +539,7 @@ mod tests {
             super::suggest_action(&prices, smas, StrategyConfig::test_config());
 
         assert_eq!(suggestion, "SELL");
-        assert_eq!(
-            reason,
-            "Breakdown below recent low in downtrend (SMA20 < SMA50)"
-        );
+        assert_eq!(reason, "Breakdown below recent low");
     }
 
     #[test]
@@ -461,7 +557,7 @@ mod tests {
             super::suggest_action(&prices, smas, StrategyConfig::test_config());
 
         assert_eq!(suggestion, "SELL");
-        assert_eq!(reason, "Pullback up to SMA20 and rejection in downtrend");
+        assert_eq!(reason, "Pullback up to SMA short and rejection");
     }
 
     #[test]
@@ -476,10 +572,7 @@ mod tests {
             super::suggest_action(&prices, smas, StrategyConfig::test_config());
 
         assert_eq!(suggestion, "BUY");
-        assert_eq!(
-            reason,
-            "Breakout above recent high in uptrend (SMA20 > SMA50)"
-        );
+        assert_eq!(reason, "Breakout above recent high");
     }
 
     #[test]
@@ -497,7 +590,7 @@ mod tests {
             super::suggest_action(&prices, smas, StrategyConfig::test_config());
 
         assert_eq!(suggestion, "BUY");
-        assert_eq!(reason, "Pullback to SMA20 and bounce in uptrend");
+        assert_eq!(reason, "Pullback to SMA short and bounce");
     }
 
     #[test]
@@ -511,10 +604,7 @@ mod tests {
             super::suggest_action(&prices, smas, StrategyConfig::test_config());
 
         assert_eq!(suggestion, "BUY");
-        assert_eq!(
-            reason,
-            "Golden Cross + SMA50 rising + price above SMA20 & SMA50"
-        );
+        assert_eq!(reason, "Golden Cross");
     }
 
     #[test]
@@ -528,10 +618,7 @@ mod tests {
             super::suggest_action(&prices, smas, StrategyConfig::test_config());
 
         assert_eq!(suggestion, "SELL");
-        assert_eq!(
-            reason,
-            "Death Cross + SMA50 falling + price below SMA20 & SMA50"
-        );
+        assert_eq!(reason, "Death Cross");
     }
 
     #[test]
@@ -544,11 +631,8 @@ mod tests {
         let (suggestion, reason) =
             super::suggest_action(&prices, smas, StrategyConfig::test_config());
 
-        assert_eq!(suggestion, "HOLD / LONG BIAS");
-        assert_eq!(
-            reason,
-            "Uptrend (SMA20 > SMA50) and price above both averages"
-        );
+        assert_eq!(suggestion, "BUY");
+        assert_eq!(reason, "Uptrend (SMA short > SMA long)");
     }
 
     #[test]
@@ -561,11 +645,8 @@ mod tests {
         let (suggestion, reason) =
             super::suggest_action(&prices, smas, StrategyConfig::test_config());
 
-        assert_eq!(suggestion, "HOLD / SHORT BIAS");
-        assert_eq!(
-            reason,
-            "Downtrend (SMA20 < SMA50) and price below both averages"
-        );
+        assert_eq!(suggestion, "SELL");
+        assert_eq!(reason, "Downtrend (SMA short < SMA long)");
     }
 
     #[test]
@@ -583,10 +664,7 @@ mod tests {
             super::suggest_action(&prices, smas, StrategyConfig::test_config());
 
         assert_eq!(suggestion, "HOLD");
-        assert_eq!(
-            reason,
-            "No clear breakout, pullback bounce/rejection, or crossover signal"
-        );
+        assert_eq!(reason, "No strategy matched");
     }
 
     #[test]
@@ -683,7 +761,7 @@ mod tests {
 
         assert_eq!(suggestion, "SELL");
         assert!(
-            reason.contains("Breakdown below recent low in downtrend"),
+            reason.contains("Breakdown below recent low"),
             "unexpected reason: {}",
             reason
         );
@@ -704,7 +782,7 @@ mod tests {
         assert_eq!(suggestion, "HOLD");
         assert_eq!(
             reason,
-            "No clear breakout, pullback bounce/rejection, or crossover signal"
+            "Breakdown below recent low, but Regime filter vetoed short & Downtrend (SMA short < SMA long), but Regime filter vetoed short"
         );
     }
 

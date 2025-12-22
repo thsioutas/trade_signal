@@ -1,6 +1,7 @@
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 
+use crate::backtest::{Backtester, Candidate, TradingMetrics};
 use crate::data::Sample;
 use crate::indicators::compute_smas;
 use crate::signal::{StrategyConfig, analyze};
@@ -13,10 +14,6 @@ pub struct BacktestConfig {
     pub initial_cash: f64,
     /// Fraction of *available cash* to allocate on each signal (0.0–1.0)
     pub buy_fraction: f64,
-    /// Whether ATR gate filter should be used
-    pub atr_enabled: bool,
-    /// Whether regime filter should be used
-    pub regime_enabled: bool,
     /// The strategy configuration
     pub strategy: StrategyConfig,
 }
@@ -191,7 +188,7 @@ fn close_position(mut pos: Position, exit_price: f64, exit_time: DateTime<Utc>) 
     pos.profit = Some(profit);
     pos.return_pct = Some(ret);
 
-    println!("{:?}", pos);
+    // TODO: log closed position
     pos
 }
 
@@ -290,4 +287,37 @@ pub fn print_summary(result: &PositionBacktestResult) {
     println!("Max drawdown:     {:.2}%", result.max_drawdown_pct * 100.0);
     println!("Positions:           {}", result.positions.len());
     println!("Win rate:         {:.2}%", result.win_rate_pct * 100.0);
+}
+
+#[derive(Clone, Copy)]
+pub struct PositionBacktester {
+    initial_cash: f64,
+}
+
+impl PositionBacktester {
+    pub fn new(initial_cash: f64) -> Self {
+        Self { initial_cash }
+    }
+}
+
+impl Backtester for PositionBacktester {
+    type Output = PositionBacktestResult;
+    fn run_backtest(&self, samples: &[Sample], cfg: &Candidate) -> Result<Self::Output, String> {
+        let backtest_config = BacktestConfig {
+            initial_cash: self.initial_cash,
+            buy_fraction: cfg.buy_sell_fraction,
+            strategy: cfg.strategy,
+        };
+        run_backtest(samples, &backtest_config)
+    }
+}
+
+impl TradingMetrics for PositionBacktestResult {
+    fn total_return_pct(&self) -> f64 {
+        self.total_return_pct
+    }
+
+    fn max_drawdown_pct(&self) -> f64 {
+        self.max_drawdown_pct
+    }
 }

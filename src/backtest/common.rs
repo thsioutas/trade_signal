@@ -1,6 +1,13 @@
-use chrono::{DateTime, Utc};
+use std::sync::atomic::{AtomicU64, Ordering};
 
-use crate::indicators::{AtrFilter, RegimeFilter};
+use chrono::{DateTime, Utc};
+use rayon::prelude::*;
+
+use crate::{
+    data::Sample,
+    indicators::{AtrFilter, RegimeFilter, sma::SmaConfig},
+    signal::{BreakoutConfig, FilterConfig, PullbackConfig, StrategyConfig},
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Signal {
@@ -49,4 +56,250 @@ pub fn compute_max_drawdown(curve: &[(DateTime<Utc>, f64)]) -> f64 {
     }
 
     max_dd
+}
+
+pub fn generate_strategies(
+    min_lookback: usize,
+    max_lookback: usize,
+    pullback_pairs: Vec<(f64, f64)>,
+) -> Vec<StrategyConfig> {
+    let mut strategies = Vec::new();
+
+    let short_candidates = [10, 20, 30];
+    let long_candidates = [40, 60, 80, 100];
+
+    let sma_configs: Vec<SmaConfig> = short_candidates
+        .iter()
+        .flat_map(|&short| {
+            long_candidates.iter().filter_map(move |&long| {
+                if long >= short * 2 {
+                    Some(SmaConfig {
+                        short_window: short,
+                        long_window: long,
+                    })
+                } else {
+                    None
+                }
+            })
+        })
+        .collect();
+
+    for sma_config in sma_configs {
+        // bit 0: breakouts
+        // bit 1: pullbacks
+        // bit 2: crossovers
+        // bit 3: bias_only
+        for mask in 0u8..16 {
+            let enable_breakouts = (mask & 0b0001) != 0;
+            let enable_pullbacks = (mask & 0b0010) != 0;
+            let enable_crossovers = (mask & 0b0100) != 0;
+            // No need to have this configurable (now)
+            // let enable_bias_only = (mask & 0b1000) != 0;
+            let enable_bias_only = true;
+
+            match (enable_breakouts, enable_pullbacks) {
+                (true, true) => {
+                    for lookback in min_lookback..=max_lookback {
+                        for (pullback_bounce_tol, pullback_rejection_tol) in &pullback_pairs {
+                            let strategy = StrategyConfig {
+                                breakouts: Some(BreakoutConfig {
+                                    breakout_lookback: lookback,
+                                }),
+                                pullbacks: Some(PullbackConfig {
+                                    bounce_tolerance_pct: *pullback_bounce_tol,
+                                    reject_tolerance_pct: *pullback_rejection_tol,
+                                }),
+                                enable_crossovers,
+                                enable_bias_only,
+                                sma_config,
+                                filters: FilterConfig {
+                                    atr: None,
+                                    regime: None,
+                                    require_price_confirmation: true,
+                                    require_trend_filter: true,
+                                },
+                            };
+
+                            strategies.push(strategy);
+                        }
+                    }
+                }
+                (true, false) => {
+                    for lookback in min_lookback..=max_lookback {
+                        let strategy = StrategyConfig {
+                            breakouts: Some(BreakoutConfig {
+                                breakout_lookback: lookback,
+                            }),
+                            pullbacks: None,
+                            enable_crossovers,
+                            enable_bias_only,
+                            sma_config,
+                            filters: FilterConfig {
+                                atr: None,
+                                regime: None,
+                                require_price_confirmation: true,
+                                require_trend_filter: true,
+                            },
+                        };
+
+                        strategies.push(strategy);
+                    }
+                }
+                (false, true) => {
+                    for (pullback_bounce_tol, pullback_rejection_tol) in &pullback_pairs {
+                        let strategy = StrategyConfig {
+                            breakouts: None,
+                            pullbacks: Some(PullbackConfig {
+                                bounce_tolerance_pct: *pullback_bounce_tol,
+                                reject_tolerance_pct: *pullback_rejection_tol,
+                            }),
+                            enable_crossovers,
+                            enable_bias_only,
+                            sma_config,
+                            filters: FilterConfig {
+                                atr: None,
+                                regime: None,
+                                require_price_confirmation: true,
+                                require_trend_filter: true,
+                            },
+                        };
+
+                        strategies.push(strategy);
+                    }
+                }
+                (false, false) => {
+                    // Skip the totally empty strategy (nothing enabled).
+                    if !enable_breakouts && !enable_pullbacks && !enable_crossovers {
+                        continue;
+                    }
+                    let strategy = StrategyConfig {
+                        breakouts: None,
+                        pullbacks: None,
+                        enable_crossovers,
+                        enable_bias_only,
+                        sma_config,
+                        filters: FilterConfig {
+                            atr: None,
+                            regime: None,
+                            require_price_confirmation: true,
+                            require_trend_filter: true,
+                        },
+                    };
+
+                    strategies.push(strategy);
+                }
+            }
+        }
+    }
+
+    strategies
+}
+
+pub fn generate_pullback_pairs(min: f64, max: f64, step: f64) -> Vec<(f64, f64)> {
+    let mut pairs = Vec::new();
+    let mut bounce = min;
+    while bounce <= max {
+        let mut reject = bounce + step;
+        while reject <= max {
+            pairs.push((bounce, reject));
+            reject += step;
+        }
+        bounce += step;
+    }
+    pairs
+}
+
+pub fn generate_backtest_sweep_jobs(
+    strategies: Vec<StrategyConfig>,
+    buy_sell_frac_steps: usize,
+) -> Vec<(StrategyConfig, usize)> {
+    strategies
+        .iter()
+        .flat_map(|&strategy| {
+            (1..=buy_sell_frac_steps).map(move |buy_sell_frac_step| (strategy, buy_sell_frac_step))
+        })
+        .collect()
+}
+
+pub struct Candidate {
+    pub buy_sell_fraction: f64,
+    pub strategy: StrategyConfig,
+}
+
+pub fn find_best_strategy<B>(
+    jobs: Vec<(StrategyConfig, usize)>,
+    max_buy_sell_fraction: f64,
+    buy_sell_frac_steps: usize,
+    samples: &[Sample],
+    backtester: B,
+) -> Option<B::Output>
+where
+    B: Backtester,
+{
+    const EPS: f64 = 1e-9;
+
+    let total_iters = jobs.len() as u64;
+    let done = AtomicU64::new(0);
+    let progress_every = (total_iters / 100).max(1);
+
+    println!(
+        "Running parameter sweep... ({} total combinations)",
+        total_iters
+    );
+
+    let best_pair: Option<B::Output> = jobs
+        .into_par_iter()
+        .filter_map(|(strategy, buy_sell_frac_step)| {
+            let current = done.fetch_add(1, Ordering::Relaxed) + 1;
+            if progress_every != 0
+                && (current.is_multiple_of(progress_every) || current == total_iters)
+            {
+                let pct = (current as f64 / total_iters as f64) * 100.0;
+                println!("Progress: {:6.2}% ({}/{})", pct, current, total_iters);
+            }
+            let buy_sell_fraction =
+                (buy_sell_frac_step as f64 / buy_sell_frac_steps as f64) * max_buy_sell_fraction;
+            let candidate = Candidate {
+                buy_sell_fraction,
+                strategy,
+            };
+            let result = backtester
+                .run_backtest(samples, &candidate)
+                .inspect_err(|err| println!("Failed to get backtest result: {}", err))
+                .ok()?;
+            Some(result)
+        })
+        .reduce_with(|res_a, res_b| {
+            let a_ret = res_a.total_return_pct();
+            let b_ret = res_b.total_return_pct();
+            let a_dd = res_a.max_drawdown_pct();
+            let b_dd = res_b.max_drawdown_pct();
+
+            // "Better" = higher total return, tie-break by lower drawdown
+            let pick_b = if b_ret > a_ret + EPS {
+                true
+            } else if (b_ret - a_ret).abs() < EPS {
+                b_dd < a_dd
+            } else {
+                false
+            };
+
+            if pick_b { res_b } else { res_a }
+        });
+
+    best_pair
+}
+
+pub trait Backtester: Sync {
+    type Output: TradingMetrics + Send;
+    fn run_backtest(
+        &self,
+        samples: &[Sample],
+        candidate: &Candidate,
+    ) -> Result<Self::Output, String>;
+}
+
+pub trait TradingMetrics {
+    fn total_return_pct(&self) -> f64;
+    fn max_drawdown_pct(&self) -> f64;
 }

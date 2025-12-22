@@ -88,12 +88,13 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
-    let hourly = resample_to_n_hours(&samples, config.sample_hours);
+    let resampled = resample_to_n_hours(&samples, config.sample_hours);
 
     println!(
-        "Loaded {} raw points, {} hourly candles after resampling.",
+        "Loaded {} raw points, {} {}h-candles after resampling.",
         samples.len(),
-        hourly.len()
+        resampled.len(),
+        config.sample_hours,
     );
 
     let pullbacks = match (
@@ -151,8 +152,6 @@ fn main() -> Result<()> {
     let cfg = BacktestConfig {
         initial_cash: config.initial_cash,
         buy_fraction: config.buy_fraction,
-        atr_enabled: config.atr_enabled,
-        regime_enabled: config.regime_enabled,
         strategy,
     };
 
@@ -160,10 +159,10 @@ fn main() -> Result<()> {
     println!("Buy fraction:      {}", cfg.buy_fraction);
     println!("Strategy:          {}", strategy.describe_config());
 
-    let result = run_backtest(&hourly, &cfg).unwrap();
+    let result = run_backtest(&resampled, &cfg).unwrap();
 
     print_summary(&result);
-    if let Some(hold_equity) = buy_and_hold_equity(&hourly, cfg.initial_cash) {
+    if let Some(hold_equity) = buy_and_hold_equity(&resampled, cfg.initial_cash) {
         println!();
         println!("Buy & hold final equity: {:.2}", hold_equity);
     }

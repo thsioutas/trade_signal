@@ -1,5 +1,6 @@
 use chrono::{DateTime, Utc};
 
+use crate::backtest::{Backtester, Candidate, TradingMetrics};
 use crate::data::Sample;
 use crate::indicators::compute_smas;
 use crate::signal::{StrategyConfig, analyze};
@@ -258,4 +259,46 @@ pub fn print_summary(result: &SpotBacktestResult) {
     println!("Max drawdown:     {:.2}%", result.max_drawdown_pct * 100.0);
     println!("Trades:           {}", result.trades.len());
     println!("Win rate:         {:.2}%", result.win_rate_pct * 100.0);
+}
+
+#[derive(Clone, Copy)]
+pub struct SpotBacktester {
+    initial_cash: f64,
+    initial_coin: f64,
+    fee_bps: f64,
+}
+
+impl SpotBacktester {
+    pub fn new(initial_cash: f64, initial_coin: f64, fee_bps: f64) -> Self {
+        Self {
+            initial_cash,
+            initial_coin,
+            fee_bps,
+        }
+    }
+}
+
+impl Backtester for SpotBacktester {
+    type Output = SpotBacktestResult;
+    fn run_backtest(&self, samples: &[Sample], cfg: &Candidate) -> Result<Self::Output, String> {
+        let backtest_config = BacktestConfig {
+            initial_cash: self.initial_cash,
+            initial_coin: self.initial_coin,
+            fee_bps: self.fee_bps,
+            buy_fraction: cfg.buy_sell_fraction,
+            sell_fraction: cfg.buy_sell_fraction,
+            strategy: cfg.strategy,
+        };
+        run_backtest(samples, &backtest_config)
+    }
+}
+
+impl TradingMetrics for SpotBacktestResult {
+    fn total_return_pct(&self) -> f64 {
+        self.total_return_pct
+    }
+
+    fn max_drawdown_pct(&self) -> f64 {
+        self.max_drawdown_pct
+    }
 }
