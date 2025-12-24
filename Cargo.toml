@@ -11,3 +11,4 @@ config              = { version = "0.15" }
 csv                 = { version = "1.4" }
 rayon               = { version = "1.11" }
 serde               = { version = "1", features = ["derive"] }
+serde_json          = { version = "1.0" }

@@ -226,15 +226,17 @@ pub struct Candidate {
     pub strategy: StrategyConfig,
 }
 
-pub fn find_best_strategy<B>(
+pub fn find_best_strategy<B, F>(
     jobs: Vec<(StrategyConfig, usize)>,
     max_buy_sell_fraction: f64,
     buy_sell_frac_steps: usize,
     samples: &[Sample],
-    backtester: B,
-) -> Option<B::Output>
+    // use factory instead of restricting with Sync
+    make_backtester: F,
+) -> Option<(Candidate, B::Output)>
 where
     B: Backtester,
+    F: Fn() -> B + Sync + Send,
 {
     const EPS: f64 = 1e-9;
 
@@ -247,33 +249,37 @@ where
         total_iters
     );
 
-    let best_pair: Option<B::Output> = jobs
+    let best_pair: Option<(Candidate, B::Output)> = jobs
         .into_par_iter()
-        .filter_map(|(strategy, buy_sell_frac_step)| {
-            let current = done.fetch_add(1, Ordering::Relaxed) + 1;
-            if progress_every != 0
-                && (current.is_multiple_of(progress_every) || current == total_iters)
-            {
-                let pct = (current as f64 / total_iters as f64) * 100.0;
-                println!("Progress: {:6.2}% ({}/{})", pct, current, total_iters);
-            }
-            let buy_sell_fraction =
-                (buy_sell_frac_step as f64 / buy_sell_frac_steps as f64) * max_buy_sell_fraction;
-            let candidate = Candidate {
-                buy_sell_fraction,
-                strategy,
-            };
-            let result = backtester
-                .run_backtest(samples, &candidate)
-                .inspect_err(|err| println!("Failed to get backtest result: {}", err))
-                .ok()?;
-            Some(result)
-        })
+        .map_init(
+            || make_backtester(),
+            |backtester, (strategy, buy_sell_frac_step)| {
+                let current = done.fetch_add(1, Ordering::Relaxed) + 1;
+                if progress_every != 0
+                    && (current.is_multiple_of(progress_every) || current == total_iters)
+                {
+                    let pct = (current as f64 / total_iters as f64) * 100.0;
+                    println!("Progress: {:6.2}% ({}/{})", pct, current, total_iters);
+                }
+                let buy_sell_fraction = (buy_sell_frac_step as f64 / buy_sell_frac_steps as f64)
+                    * max_buy_sell_fraction;
+                let candidate = Candidate {
+                    buy_sell_fraction,
+                    strategy,
+                };
+                let result = backtester
+                    .run_backtest(samples, &candidate)
+                    .inspect_err(|err| println!("Failed to get backtest result: {}", err))
+                    .ok()?;
+                Some((candidate, result))
+            },
+        )
+        .filter_map(|x| x)
         .reduce_with(|res_a, res_b| {
-            let a_ret = res_a.total_return_pct();
-            let b_ret = res_b.total_return_pct();
-            let a_dd = res_a.max_drawdown_pct();
-            let b_dd = res_b.max_drawdown_pct();
+            let a_ret = res_a.1.total_return_pct();
+            let b_ret = res_b.1.total_return_pct();
+            let a_dd = res_a.1.max_drawdown_pct();
+            let b_dd = res_b.1.max_drawdown_pct();
 
             // "Better" = higher total return, tie-break by lower drawdown
             let pick_b = if b_ret > a_ret + EPS {
@@ -290,7 +296,7 @@ where
     best_pair
 }
 
-pub trait Backtester: Sync {
+pub trait Backtester {
     type Output: TradingMetrics + Send;
     fn run_backtest(
         &self,

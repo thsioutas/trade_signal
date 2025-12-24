@@ -86,34 +86,30 @@ fn main() -> Result<()> {
 
     let jobs = generate_backtest_sweep_jobs(strategies, buy_sell_frac_steps);
 
-    let backtester = SpotBacktester::new(config.initial_cash, config.initial_coin, config.fee_bps);
-
     let best = find_best_strategy(
         jobs,
         config.max_buy_sell_fraction,
         buy_sell_frac_steps,
         &hourly,
-        backtester,
+        || SpotBacktester::new(config.initial_cash, config.initial_coin, config.fee_bps),
     );
 
     println!();
-    if let Some(result) = best {
+    if let Some((candidate, result)) = best {
         println!("=== Best configuration ===");
         println!(
             "strategy:          {}",
-            result.config.strategy.describe_config()
+            candidate.strategy.describe_config()
         );
-        println!("buy_fraction:      {:.2}", result.config.buy_fraction);
-        println!("sell_fraction:     {:.2}", result.config.sell_fraction);
-        println!("fee_bps:           {:.2}", result.config.fee_bps);
+        println!("buy_fraction:      {:.2}", candidate.buy_sell_fraction);
+        println!("sell_fraction:     {:.2}", candidate.buy_sell_fraction);
+        println!("fee_bps:           {:.2}", config.fee_bps);
         println!();
         print_summary(&result);
 
-        if let Some(hold_equity) = buy_and_hold_equity(
-            &hourly,
-            result.config.initial_cash,
-            result.config.initial_coin,
-        ) {
+        if let Some(hold_equity) =
+            buy_and_hold_equity(&hourly, config.initial_cash, config.initial_coin)
+        {
             println!();
             println!("Buy & hold final equity: {:.2}", hold_equity);
         }

@@ -4,9 +4,8 @@ use anyhow::{Context, Result};
 use clap::Parser;
 use serde::Deserialize;
 
-use trade_signal::backtest::spot::{
-    BacktestConfig, buy_and_hold_equity, print_summary, run_backtest,
-};
+use trade_signal::backtest::spot::{SpotBacktester, buy_and_hold_equity, print_summary};
+use trade_signal::backtest::{Backtester, Candidate};
 use trade_signal::data::{get_samples_from_input_file, resample_to_hourly};
 use trade_signal::indicators::sma::SmaConfig;
 use trade_signal::indicators::{AtrFilter, RegimeFilter};
@@ -33,11 +32,8 @@ pub struct Config {
     /// Fee in basis points per trade side (e.g. 10 = 0.10%)
     fee_bps: f64,
 
-    /// Fraction of *available cash* to allocate on each BUY signal (0.0–1.0)
-    buy_fraction: f64,
-
-    /// Fraction of *current position* to sell on each SELL signal (0.0–1.0)
-    sell_fraction: f64,
+    /// Fraction of *available cash* to allocate on each BUY/SELL signal (0.0–1.0)
+    buy_sell_fraction: f64,
 
     /// Whether ATR gate filter should be used
     atr_enabled: bool,
@@ -154,26 +150,23 @@ fn main() -> Result<()> {
         },
     };
 
-    let cfg = BacktestConfig {
-        initial_cash: config.initial_cash,
-        initial_coin: config.initial_coin,
-        fee_bps: config.fee_bps,
-        buy_fraction: config.buy_fraction,
-        sell_fraction: config.sell_fraction,
-        strategy,
-    };
-
-    println!("Initial cash:      {}", cfg.initial_cash);
-    println!("Initial coin:      {}", cfg.initial_coin);
-    println!("Fee bps:           {}", cfg.fee_bps);
-    println!("Buy fraction:      {}", cfg.buy_fraction);
-    println!("Sell fraction:     {}", cfg.sell_fraction);
+    println!("Initial cash:      {}", config.initial_cash);
+    println!("Initial coin:      {}", config.initial_coin);
+    println!("Fee bps:           {}", config.fee_bps);
+    println!("Buy/Sell fraction: {}", config.buy_sell_fraction);
     println!("Strategy:          {}", strategy.describe_config());
 
-    let result = run_backtest(&hourly, &cfg).unwrap();
+    let backtester = SpotBacktester::new(config.initial_cash, config.initial_coin, config.fee_bps);
+    let candidate = Candidate {
+        buy_sell_fraction: config.buy_sell_fraction,
+        strategy,
+    };
+    let result = backtester.run_backtest(&hourly, &candidate).unwrap();
 
     print_summary(&result);
-    if let Some(hold_equity) = buy_and_hold_equity(&hourly, cfg.initial_cash, cfg.initial_coin) {
+    if let Some(hold_equity) =
+        buy_and_hold_equity(&hourly, config.initial_cash, config.initial_coin)
+    {
         println!();
         println!("Buy & hold final equity: {:.2}", hold_equity);
     }

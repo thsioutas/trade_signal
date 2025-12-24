@@ -8,8 +8,9 @@ use trade_signal::indicators::{AtrFilter, RegimeFilter};
 use trade_signal::signal::{BreakoutConfig, FilterConfig, PullbackConfig, StrategyConfig};
 
 use trade_signal::backtest::position::{
-    BacktestConfig, buy_and_hold_equity, print_summary, run_backtest,
+    NdjsonLogger, PositionBacktester, buy_and_hold_equity, print_summary,
 };
+use trade_signal::backtest::{Backtester, Candidate};
 use trade_signal::data::{get_samples_from_input_file, resample_to_n_hours};
 
 #[derive(Debug, Parser)]
@@ -149,23 +150,31 @@ fn main() -> Result<()> {
         },
     };
 
-    let cfg = BacktestConfig {
-        initial_cash: config.initial_cash,
-        buy_fraction: config.buy_fraction,
+    let candidate = Candidate {
+        buy_sell_fraction: config.buy_fraction,
         strategy,
     };
 
-    println!("Initial cash:      {}", cfg.initial_cash);
-    println!("Buy fraction:      {}", cfg.buy_fraction);
+    println!("Initial cash:      {}", config.initial_cash);
+    println!("Buy fraction:      {}", config.buy_fraction);
     println!("Strategy:          {}", strategy.describe_config());
 
-    let result = run_backtest(&resampled, &cfg).unwrap();
+    let log_path = log_path_unix("position_backtest");
+    let position_logger = NdjsonLogger::new(log_path);
+    let backtester = PositionBacktester::with_logger(config.initial_cash, position_logger);
+    let result = backtester.run_backtest(&resampled, &candidate).unwrap();
 
     print_summary(&result);
-    if let Some(hold_equity) = buy_and_hold_equity(&resampled, cfg.initial_cash) {
+    if let Some(hold_equity) = buy_and_hold_equity(&resampled, config.initial_cash) {
         println!();
         println!("Buy & hold final equity: {:.2}", hold_equity);
     }
 
     Ok(())
+}
+
+fn log_path_unix(prefix: &str) -> PathBuf {
+    let now = chrono::Local::now();
+    let fmt = now.format("%Y-%m-%d_%H:%M:%S");
+    PathBuf::from("logs").join(format!("{prefix}_{fmt}.log"))
 }

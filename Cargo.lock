@@ -802,6 +802,7 @@ dependencies = [
  "csv",
  "rayon",
  "serde",
+ "serde_json",
 ]
 
 [[package]]

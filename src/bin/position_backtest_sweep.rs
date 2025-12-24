@@ -86,28 +86,26 @@ fn main() -> Result<()> {
 
     let jobs = generate_backtest_sweep_jobs(strategies, buy_sell_frac_steps);
 
-    let backtester = PositionBacktester::new(config.initial_cash);
-
     let best = find_best_strategy(
         jobs,
         config.max_buy_sell_fraction,
         buy_sell_frac_steps,
         &samples,
-        backtester,
+        || PositionBacktester::new(config.initial_cash),
     );
 
     println!();
-    if let Some(result) = best {
+    if let Some((candidate, result)) = best {
         println!("=== Best configuration ===");
         println!(
             "strategy:          {}",
-            result.config.strategy.describe_config()
+            candidate.strategy.describe_config()
         );
-        println!("buy_fraction:      {:.2}", result.config.buy_fraction);
+        println!("buy_fraction:      {:.2}", candidate.buy_sell_fraction);
         println!();
         print_summary(&result);
 
-        if let Some(hold_equity) = buy_and_hold_equity(&samples, result.config.initial_cash) {
+        if let Some(hold_equity) = buy_and_hold_equity(&samples, result.initial_equity) {
             println!();
             println!("Buy & hold final equity: {:.2}", hold_equity);
         }
